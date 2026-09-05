@@ -66,6 +66,13 @@ class Game:
         self.player_right: Optional[players.Player] = None
         self.cpu_left: Optional[cpu.CPUController] = None
         self.cpu_right: Optional[cpu.CPUController] = None
+        # Anti-stalemate timer (config.CPU_STALEMATE_SECONDS): seconds of
+        # live play since the last goal (or kickoff). Reset on every goal
+        # and every fresh match; once it crosses the threshold, every CPU
+        # abandons its defensive leash entirely until the next goal, so a
+        # prolonged deadlock (e.g. against a human who never moves at
+        # all) always eventually resolves. See _step_gameplay().
+        self._seconds_since_goal = 0.0
 
         # Result screen.
         self.result_winner: Optional[str] = None
@@ -103,7 +110,7 @@ class Game:
         (human vs human). Public so tests can drive it directly without
         going through menu navigation."""
         cpu_left = None
-        cpu_right = cpu.CPUController(rng=self.rng) if mode == "1P" else None
+        cpu_right = cpu.CPUController(rng=self.rng, defend_x=config.PITCH_RIGHT) if mode == "1P" else None
         self._start_match_common(mode, cpu_left, cpu_right)
         self.state = GameState.MATCH
 
@@ -125,6 +132,7 @@ class Game:
             self.cpu_left.reset()
         if self.cpu_right is not None:
             self.cpu_right.reset()
+        self._seconds_since_goal = 0.0
 
     def _reset_positions(self) -> None:
         """Put both players and the ball back at kickoff, without
@@ -150,6 +158,7 @@ class Game:
             self.cpu_left.reset()
         if self.cpu_right is not None:
             self.cpu_right.reset()
+        self._seconds_since_goal = 0.0
 
     # -- pure per-frame update --------------------------------------------------
     def update(self, dt: float, raw: RawInput) -> None:
@@ -249,8 +258,14 @@ class Game:
             self._step_gameplay(dt, raw)
 
     def _step_gameplay(self, dt: float, raw: RawInput) -> None:
+        # Anti-stalemate: once neither side has scored for long enough,
+        # every CPU drops its defensive leash entirely -- see
+        # config.CPU_STALEMATE_SECONDS and CPUController._defensive_target_x().
+        self._seconds_since_goal += dt
+        force_full_advance = self._seconds_since_goal >= config.CPU_STALEMATE_SECONDS
+
         if self.cpu_left is not None:
-            intent = self.cpu_left.update(dt, self.ball, self.player_left)
+            intent = self.cpu_left.update(dt, self.ball, self.player_left, force_full_advance)
             move_l, jump_l, kick_l = intent.move, intent.jump, intent.kick
         elif self.mode == "1P":
             move_l = input_mod.resolve_move_single_player(raw)
@@ -263,7 +278,7 @@ class Game:
         players.update_player(self.player_left, dt, move_l, jump_l)
 
         if self.cpu_right is not None:
-            intent = self.cpu_right.update(dt, self.ball, self.player_right)
+            intent = self.cpu_right.update(dt, self.ball, self.player_right, force_full_advance)
             move_r, jump_r, kick_r = intent.move, intent.jump, intent.kick
         else:
             move_r = input_mod.resolve_move_p2(raw)
@@ -291,8 +306,10 @@ class Game:
         event = physics.step_ball(self.ball, dt)
         if event == "left_goal":
             match_mod.register_goal(self.match, side="right")
+            self._seconds_since_goal = 0.0
         elif event == "right_goal":
             match_mod.register_goal(self.match, side="left")
+            self._seconds_since_goal = 0.0
 
         self.anim_clock += dt
 
@@ -317,7 +334,9 @@ class Game:
         HeadScotter's only persisted record is per-1P-win, a CPU vs CPU
         demo structurally can never write it."""
         self._start_match_common(
-            "DEMO", cpu.CPUController(rng=self.rng), cpu.CPUController(rng=self.rng)
+            "DEMO",
+            cpu.CPUController(rng=self.rng, defend_x=config.PITCH_LEFT),
+            cpu.CPUController(rng=self.rng, defend_x=config.PITCH_RIGHT),
         )
         self.state = GameState.DEMO
 

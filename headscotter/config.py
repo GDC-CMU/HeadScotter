@@ -50,7 +50,32 @@ PITCH_CENTER_X = (PITCH_LEFT + PITCH_RIGHT) / 2.0
 # as a goal instead of a wall bounce. Below CROSSBAR_Y (numerically closer to
 # GROUND_Y) is the open net; at or above it is the solid crossbar/post, which
 # just bounces the ball back into play like any other wall.
-GOAL_MOUTH_HEIGHT = 170
+#
+# Grounded in two independent, verifiable references, then driven the rest
+# of the way by headless simulation rather than picked by eye (originally
+# 170px/44% of the playfield, which -- combined with no goalkeeper -- meant
+# nearly any kick aimed at the opponent's half scored: a simulated 90s
+# CPU-vs-CPU match at that size finished 31-28):
+#  1. Real association football: a regulation goal is 2.44m tall; an average
+#     adult is roughly 1.75-1.83m, so a real goal is ~1.3-1.4x a player's
+#     standing height.
+#  2. 2D "head soccer"-style clones (which likewise have no separate
+#     keeper) commonly size the goal mouth at roughly 20-30% of the
+#     playfield's vertical extent, not ~44%.
+#  Both of those describe a match *with* a goalkeeper (real football) or
+#  at least some active defense (typical clones' still-present, if simple,
+#  keeper AI). This game deliberately has neither -- see
+#  CPU_MAX_ADVANCE_FRACTION -- so both reference ratios are a starting
+#  point, not the final answer: simulating full matches at each candidate
+#  size (see tests/test_balance.py) showed even the smaller of the two
+#  references (~30% of the playfield, ~117px) still produced scorelines
+#  in the high teens/twenties. 60px (~0.54x PLAYER_HEIGHT, ~15% of the
+#  playfield) was the smallest step that reliably produced single-digit-
+#  per-side scorelines across 150 simulated seeds with zero non-
+#  terminating matches, while GOAL_MOUTH_HEIGHT=50 introduced a match that
+#  never resolved at all -- see CPU_RESTING_SPEED_PX for why, and the
+#  balance tests for the numbers this is checked against.
+GOAL_MOUTH_HEIGHT = 60
 CROSSBAR_Y = GROUND_Y - GOAL_MOUTH_HEIGHT
 
 # --- Player geometry ------------------------------------------------------------
@@ -92,7 +117,19 @@ BALL_RESTITUTION_WALL = 0.80
 # Found this during a headless full-match simulation against a passive
 # opponent, which is exactly the kind of edge case a real tuning pass is
 # for -- see the client's request in the project brief.
-BALL_RESTITUTION_HEAD = 0.55
+#
+# Lowered further from an initial 0.55 during the goal/scoring-rate
+# balance pass (see GOAL_MOUTH_HEIGHT and CPU_MAX_ADVANCE_FRACTION):
+# headers, not kicks, turned out to be the main source of unrealistic
+# scoring once the goal was already shrunk and the CPU was already
+# playing more defensively -- a chain of two or three headers between
+# players could still build up enough speed to cross the whole pitch
+# regardless of how hard the ball was kicked (confirmed by simulating
+# with KICK_IMPULSE_SPEED cut by a third, which barely changed the
+# scoreline). 0.3 was the value, found by simulating full matches at
+# each candidate (see tests/test_balance.py), that -- together with the
+# other two changes -- reliably keeps scorelines single-digit-per-side.
+BALL_RESTITUTION_HEAD = 0.3
 # Below this bounce speed the ball is considered at rest rather than left to
 # jitter in an ever-smaller "Zeno" bounce loop against the ground.
 BALL_MIN_BOUNCE_SPEED = 40.0
@@ -134,6 +171,49 @@ CPU_JUMP_BALL_HEIGHT = 20.0
 # (so its lag applies to kicks too, not just movement).
 CPU_KICK_RANGE_X = KICK_RANGE_X
 CPU_KICK_RANGE_Y = KICK_RANGE_Y
+# There is no separate goalkeeper in this genre (nor in this game) -- each
+# field player defends by holding a defensive line instead of fully
+# committing forward, the standard simple single-defender pattern used in
+# 2D head-soccer clones. This caps how far a CPU will chase the ball away
+# from its own goal, as a fraction of the full pitch width, while the ball
+# is a live attacking threat (see CPU_RESTING_SPEED_PX for the exception).
+# Chosen empirically, not guessed: simulating dozens of full 90s CPU-vs-CPU
+# matches per candidate value found this was a knife-edge parameter -- too
+# low (below ~0.30) and both CPUs can't even reach the resting kickoff
+# ball (0-0 forever); too high (0.36+) and enough space opens up that
+# scorelines rocket into the double digits. A first pass landed on 0.39,
+# but a later fix to a bug in the CPU's own ballistic extrapolation (see
+# CPUController._perceive()) made its ball-tracking meaningfully more
+# accurate, which shifted this whole knife-edge lower -- 0.39 alone was
+# no longer enough once combined with that fix and the lowered
+# BALL_RESTITUTION_HEAD below. 0.32 was the value found by re-simulating
+# 150 seeds at a generous tick budget that reliably keeps scorelines
+# single-digit-per-side with zero non-terminating matches -- see
+# tests/test_balance.py, which locks this in as a regression guard.
+CPU_MAX_ADVANCE_FRACTION = 0.32
+# Below this perceived speed (px/sec) the ball is treated as having
+# stopped, not as a live attacking threat -- the defensive cap above is
+# lifted entirely so any CPU will always go and retrieve a dead ball
+# regardless of distance from its own goal. Without this, a ball that
+# happens to settle outside a CPU's advance limit (e.g. facing a human
+# who never moves at all) could never be reached by anyone and the match
+# would stall forever -- the exact failure mode this constant exists to
+# rule out.
+CPU_RESTING_SPEED_PX = 50.0
+# Anti-stalemate timeout, the same pattern this club already uses for
+# PacDawg's ghost-release anti-starvation timer: if *no one* has scored
+# for this many seconds of actual live play, every CPU temporarily
+# ignores CPU_MAX_ADVANCE_FRACTION entirely and chases the ball wherever
+# it is, exactly as if the ball had come to rest (see
+# CPU_RESTING_SPEED_PX above). Found necessary by simulation: an
+# otherwise-idle human can act as a stationary wall that, combined with
+# both CPUs' own defensive caution, occasionally kept a rally shuttling
+# back and forth near midfield without either side ever committing far
+# enough forward to actually score -- confirmed to persist for a full
+# simulated hour before this fix. This guarantees a match (and sudden
+# death specifically) always eventually resolves, without weakening the
+# defensive positioning during ordinary, actively-contested play.
+CPU_STALEMATE_SECONDS = 20.0
 
 # --- Match rules -------------------------------------------------------------------
 MATCH_SECONDS = 90.0

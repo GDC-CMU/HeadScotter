@@ -13,6 +13,7 @@ Pure logic, no :mod:`pygame` import.
 """
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 
@@ -33,6 +34,12 @@ class CPUIntent:
 @dataclass
 class CPUController:
     rng: random.Random = field(default_factory=random.Random)
+    #: The x-coordinate of the goal *this* CPU defends -- config.PITCH_RIGHT
+    #: for a CPU on the right (the common case, the 1P-mode opponent), or
+    #: config.PITCH_LEFT for a CPU on the left (only used when both sides
+    #: are CPU-controlled, i.e. the attract-mode demo). Used only to bound
+    #: how far forward it will chase the ball -- see _defensive_target_x().
+    defend_x: float = config.PITCH_RIGHT
 
     _perception_timer: float = field(default=0.0, repr=False)
     _known_ball_x: float = field(default=0.0, repr=False)
@@ -48,11 +55,11 @@ class CPUController:
         self._has_perceived = False
         self._aim_error = 0.0
 
-    def update(self, dt: float, ball: Ball, player: Player) -> CPUIntent:
+    def update(self, dt: float, ball: Ball, player: Player, force_full_advance: bool = False) -> CPUIntent:
         self._perceive(dt, ball)
 
         target_x = physics.clamp(
-            self._known_ball_x + self._aim_error,
+            self._defensive_target_x(force_full_advance) + self._aim_error,
             config.PITCH_LEFT + config.PLAYER_HALF_WIDTH,
             config.PITCH_RIGHT - config.PLAYER_HALF_WIDTH,
         )
@@ -75,6 +82,50 @@ class CPUController:
 
         return CPUIntent(move=move, jump=jump, kick=kick)
 
+    def _defensive_target_x(self, force_full_advance: bool = False) -> float:
+        """Where this CPU wants to stand, x-wise: the ball's perceived
+        position, but never advanced further from its own goal than
+        ``config.CPU_MAX_ADVANCE_FRACTION`` of the pitch width.
+
+        Without this, both CPUs simply chase the ball wherever it goes --
+        which leaves both goals completely unguarded at the same time and
+        both players clumped in the middle of the pitch. This is a
+        deliberately simple stand-in for a dedicated goalkeeper (the genre
+        doesn't have one; see assets/README.md and the club's other
+        cabinet games for the same "no separate keeper" convention): each
+        field player instead holds a defensive line rather than fully
+        committing forward, exactly like the real single-defender AI
+        pattern used in 2D head-soccer clones. It does not affect
+        jump/kick decisions at all -- those still react to the ball
+        wherever it actually is, so a clearance that lands near a
+        deep-lying defender is still headed/kicked away normally.
+
+        The cap is lifted entirely while the ball is essentially at rest
+        (perceived speed below ``config.CPU_RESTING_SPEED_PX``): a ball
+        that has stopped moving is not an attacking threat worth holding
+        a defensive line against, and always going to retrieve it is what
+        stops a dead ball that happens to settle outside this CPU's
+        advance limit -- e.g. facing a human who isn't moving at all --
+        from being permanently unreachable and stalling the match forever.
+
+        ``force_full_advance`` is the anti-stalemate override (see
+        ``config.CPU_STALEMATE_SECONDS``, set by the caller once neither
+        side has scored in a while): it lifts the cap the same way a
+        resting ball does, regardless of the ball's actual speed, so a
+        prolonged deadlock always eventually breaks.
+        """
+        pitch_width = config.PITCH_RIGHT - config.PITCH_LEFT
+        advance = config.CPU_MAX_ADVANCE_FRACTION * pitch_width
+        ball_speed = math.hypot(self._known_ball_vx, self._known_ball_vy)
+        if force_full_advance or ball_speed < config.CPU_RESTING_SPEED_PX:
+            return self._known_ball_x
+        if self.defend_x >= config.PITCH_CENTER_X:  # defends the right goal
+            limit_x = self.defend_x - advance
+            return max(self._known_ball_x, limit_x)
+        else:  # defends the left goal
+            limit_x = self.defend_x + advance
+            return min(self._known_ball_x, limit_x)
+
     def _perceive(self, dt: float, ball: Ball) -> None:
         self._perception_timer += dt
         if not self._has_perceived or self._perception_timer >= config.CPU_REACTION_DELAY_SECONDS:
@@ -92,3 +143,17 @@ class CPUController:
             self._known_ball_vy += config.GRAVITY * dt
             self._known_ball_x += self._known_ball_vx * dt
             self._known_ball_y += self._known_ball_vy * dt
+            # Mirror the real ball's ground collision: without this, a
+            # ball that is genuinely at rest on the ground (real vy == 0,
+            # held there every frame by physics.step_ball's ground snap)
+            # would still be extrapolated as if gravity kept accelerating
+            # it downward, fabricating an ever-growing "falling" velocity
+            # for a ball that isn't moving at all -- which was silently
+            # defeating the CPU_RESTING_SPEED_PX check in
+            # _defensive_target_x() for most of the time between
+            # perception ticks.
+            ground_y = config.GROUND_Y - config.BALL_RADIUS
+            if self._known_ball_y >= ground_y:
+                self._known_ball_y = ground_y
+                self._known_ball_vy = 0.0
+

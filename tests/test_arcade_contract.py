@@ -337,14 +337,17 @@ class HeadlessStabilityTests(unittest.TestCase):
         game = Game(rng=random.Random(7))
         game.start_match("1P")
         idle = RawInput()
-        # A generous frame budget: reaching FULL_TIME requires 90s of
-        # *actual PLAYING time*, but every goal also spends
-        # GOAL_CELEBRATION_SECONDS + KICKOFF_FREEZE_SECONDS frozen, so a
-        # high-scoring match (worst case here: an entirely passive human
-        # opponent, which this test deliberately is) can take several
-        # times MATCH_SECONDS of simulated wall-clock frames. This is all
-        # pure headless computation, so a large budget is still fast.
-        for _ in range(int(config.MATCH_SECONDS * 60 * 12)):
+        # A generous frame budget. Reaching FULL_TIME requires 90s of
+        # *actual PLAYING time*, every goal also spends
+        # GOAL_CELEBRATION_SECONDS + KICKOFF_FREEZE_SECONDS frozen, and a
+        # tied match continues into sudden death with no clock at all --
+        # so, especially against an entirely passive human opponent
+        # (which this test deliberately is), the wall-clock time to
+        # reach a result has no small fixed ceiling. See
+        # tests/test_balance.py, which uses the same generous budget for
+        # the same reason. This is all pure headless computation, so a
+        # large budget is still fast to actually run.
+        for _ in range(int(20 * 60 * 60)):
             game.update(1 / 60.0, idle)
             if game.state is GameState.RESULT:
                 break
