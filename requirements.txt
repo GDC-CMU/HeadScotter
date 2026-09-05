@@ -1,0 +1,9 @@
+# The cabinet builds a fresh, isolated venv per game from this file. Pin to
+# the same range the other cabinet games use (pygame-ce>=2.4,<3) rather than
+# an exact version -- the box has already resolved pygame-ce for at least one
+# other game there, and an exact pin to a different patch version risks pip
+# being unable to find a matching cp310 wheel on that platform and falling
+# back to a from-source build, which is exactly the kind of failure that only
+# shows up at the fair. Staying within one minor-version family also avoids
+# two competing SDL installs on the box.
+pygame-ce>=2.4,<3
