@@ -84,8 +84,10 @@ headscotter/
   assets.py                the single point of PNG access
   render.py                draws only from assets.py surfaces
 tools/generate_placeholders.py   regenerates the committed placeholder art deterministically
+tools/generate_preview.py        regenerates the ArcadeLauncher gallery-card preview loop
 tests/                    headless unit tests (SDL_VIDEODRIVER=dummy)
 assets/                   sprites + assets/README.md (the art-swap contract)
+assets/preview/           gallery attract-mode preview loop (see below)
 docs/screenshots/         what it currently looks like
 ```
 
@@ -106,11 +108,37 @@ design: ball physics is the single thing most likely to need a
 after-the-fact tuning pass once people are actually playing it on the
 cabinet.
 
+## Attract-mode preview (`assets/preview/`)
+
+The ArcadeLauncher's gallery plays a short looping animation *inside this
+game's card* while the cabinet idles -- it cannot run our own game loop
+to produce that (it's a separate process), so we ship a small
+pre-rendered clip instead. `assets/preview/manifest.json` lists an
+ordered sequence of `frame_NNN.png` files (200x150, 8fps, ~1.75s loop)
+played on repeat; see the launcher's own preview contract for the full
+rules. This is entirely optional/read-only from the launcher's side --
+the launcher never runs this repo's code to produce it.
+
+The clip is generated, not hand-drawn: `tools/generate_preview.py` drives
+the real attract-mode demo (the same CPU-vs-CPU match shown in-game after
+15s idle) headlessly through the real render path, capturing a moment a
+few seconds into the very first kickoff where the ball is already in
+fast, open play. It is fully deterministic (fixed RNG seed, fixed
+simulated timestep, no wall-clock or persisted state involved) -- running
+it twice leaves `git status` clean. Regenerate after any art or physics
+change that would make the loop stop matching how the game actually
+plays:
+
+```
+python tools/generate_preview.py
+```
+
 ## Development
 
 ```
 pip install -r requirements.txt
 python -m unittest discover -s tests -v      # headless, no display needed
 python tools/generate_placeholders.py         # regenerate placeholder art
+python tools/generate_preview.py              # regenerate the gallery preview loop
 python main.py                                # run the game (HEADSCOTTER_WINDOWED=1 for a window)
 ```
