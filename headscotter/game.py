@@ -472,7 +472,23 @@ class Game:
         explicit already-held set. Split out from
         _seed_input_state_from_hardware() so the "launched with a button
         already held" scenario is directly testable without a real
-        display or joystick device."""
+        display or joystick device.
+
+        Synchronizes ``_joystick_order`` with whatever device indices
+        appear in ``buttons_by_instance`` first: ``_build_raw_input()``
+        (and therefore every button lookup below) only ever considers
+        devices listed there, so a device seeded here without also being
+        registered would have its held buttons silently ignored -- which
+        previously let a P1/back button held continuously from process
+        startup fall through as "not held" and fire immediately on the
+        very first frame, instead of being correctly latched disarmed.
+        Preserves any already-known order and only appends devices not
+        yet seen, so this is also safe to call after real joysticks have
+        already been added via _add_joystick().
+        """
+        for instance_id in buttons_by_instance:
+            if instance_id not in self._joystick_order:
+                self._joystick_order.append(instance_id)
         self.pressed_keys = set(pressed_keys)
         self._buttons_by_instance = {iid: set(buttons) for iid, buttons in buttons_by_instance.items()}
         seeded = self._build_raw_input()

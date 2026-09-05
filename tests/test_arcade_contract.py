@@ -143,20 +143,39 @@ class BackOneLevelContractTests(unittest.TestCase):
 
 
 class StartupResidueGuardTests(unittest.TestCase):
+    """The seeded-state guard must be honoured for *every* control that
+    can trigger a state transition on its own -- confirm (start a match)
+    and back/P1 (exit or return to the menu) -- not just the one the
+    settle window happens to also cover. See _seed_input_state(), which
+    is the direct testing seam ArcadeLauncher hand-off scenarios are
+    meant to be reproduced through, without needing a real display or
+    joystick device."""
+
     def test_a_held_confirm_button_at_startup_does_not_start_a_match(self):
         game = Game(rng=random.Random(0))
-        game._joystick_order = [0]
         game._seed_input_state({}, {0: {config.BUTTON_A}})
         held = RawInput(buttons_by_device=(frozenset({config.BUTTON_A}),), pressed_buttons=frozenset({config.BUTTON_A}))
         for _ in range(10):
             game.update(1 / 60.0, held)
         self.assertEqual(game.state, GameState.ATTRACT)
 
+    def test_a_confirm_button_continuously_held_past_the_settle_window_still_does_not_start_a_match(self):
+        # The startup settle window (config.INPUT_SETTLE_SECONDS, 0.3s =
+        # 18 frames) is a belt-and-braces *second* guard on top of the
+        # seeded edge latch -- it must not be the only thing preventing
+        # a false "fresh press" here. Hold for well past 18 frames with
+        # no release at all.
+        game = Game(rng=random.Random(0))
+        game._seed_input_state({}, {0: {config.BUTTON_A}})
+        held = RawInput(buttons_by_device=(frozenset({config.BUTTON_A}),), pressed_buttons=frozenset({config.BUTTON_A}))
+        for _ in range(120):  # 2s, well past the 0.3s settle window, never released
+            game.update(1 / 60.0, held)
+        self.assertEqual(game.state, GameState.ATTRACT)
+
     def test_a_held_back_button_at_startup_does_not_immediately_exit(self):
         game = Game(rng=random.Random(0))
-        game._joystick_order = [0]
         game._seed_input_state({}, {0: {config.BUTTON_P1}})
-        held = RawInput(pressed_buttons=frozenset({config.BUTTON_P1}))
+        held = RawInput(buttons_by_device=(frozenset({config.BUTTON_P1}),), pressed_buttons=frozenset({config.BUTTON_P1}))
         try:
             for _ in range(10):
                 game.maybe_go_back(held)
@@ -164,9 +183,59 @@ class StartupResidueGuardTests(unittest.TestCase):
             self.fail("a button already held at startup triggered an immediate exit")
         self.assertEqual(game.state, GameState.ATTRACT)
 
+    def test_a_continuously_held_p1_from_startup_never_exits(self):
+        """Regression test: a P1/back button already held when the
+        process starts, and NEVER released across many frames, must
+        never fire -- only a genuine release-then-press may. This is
+        the real-world case (a visitor's finger still down as the
+        process starts), and previously failed: _seed_input_state()
+        seeded _back_armed as if the button were *not* held (because
+        the device wasn't yet registered in _joystick_order), so the
+        very first maybe_go_back() call read it as a fresh press and
+        exited immediately despite the continuous hold."""
+        game = Game(rng=random.Random(0))
+        game._seed_input_state({}, {0: {config.BUTTON_P1}})
+        held = RawInput(buttons_by_device=(frozenset({config.BUTTON_P1}),), pressed_buttons=frozenset({config.BUTTON_P1}))
+        try:
+            for _ in range(180):  # 3s, continuously held, never released even once
+                game.maybe_go_back(held)
+                game.update(1 / 60.0, held)
+        except SystemExit:
+            self.fail("a continuously held P1 (never released) exited the process")
+        self.assertEqual(game.state, GameState.ATTRACT)
+
+    def test_a_continuously_held_p1_on_the_second_joystick_never_exits(self):
+        """The guard must be per-device, not just device 0 -- P2's
+        stick (device index 1) must be covered identically."""
+        game = Game(rng=random.Random(0))
+        game._seed_input_state({}, {1: {config.BUTTON_P1}})
+        held = RawInput(
+            buttons_by_device=(frozenset(), frozenset({config.BUTTON_P1})),
+            pressed_buttons=frozenset({config.BUTTON_P1}),
+        )
+        try:
+            for _ in range(180):
+                game.maybe_go_back(held)
+                game.update(1 / 60.0, held)
+        except SystemExit:
+            self.fail("a continuously held P1 on the second joystick exited the process")
+        self.assertEqual(game.state, GameState.ATTRACT)
+
+    def test_a_continuously_held_escape_key_from_startup_never_exits(self):
+        """Same guarantee for the keyboard Esc alias of back/P1."""
+        game = Game(rng=random.Random(0))
+        game._seed_input_state({"escape"}, {})
+        held = RawInput(pressed_keys=frozenset({"escape"}))
+        try:
+            for _ in range(180):
+                game.maybe_go_back(held)
+                game.update(1 / 60.0, held)
+        except SystemExit:
+            self.fail("a continuously held Esc (never released) exited the process")
+        self.assertEqual(game.state, GameState.ATTRACT)
+
     def test_releasing_and_pressing_again_after_seeding_still_works(self):
         game = Game(rng=random.Random(0))
-        game._joystick_order = [0]
         game._seed_input_state({}, {0: {config.BUTTON_A}})
         held = RawInput(buttons_by_device=(frozenset({config.BUTTON_A}),), pressed_buttons=frozenset({config.BUTTON_A}))
         released = RawInput()
@@ -176,6 +245,20 @@ class StartupResidueGuardTests(unittest.TestCase):
             game.update(1 / 60.0, released)
         game.update(1 / 60.0, held)
         self.assertEqual(game.state, GameState.MATCH)
+
+    def test_releasing_and_pressing_p1_again_after_seeding_still_exits(self):
+        """The flip side of the never-exits guarantee: once a seeded,
+        held P1 is genuinely released and pressed again, back/exit must
+        still work -- the fix must not have over-corrected into "P1 can
+        never fire after being seeded held"."""
+        game = Game(rng=random.Random(0))
+        game._seed_input_state({}, {0: {config.BUTTON_P1}})
+        held = RawInput(buttons_by_device=(frozenset({config.BUTTON_P1}),), pressed_buttons=frozenset({config.BUTTON_P1}))
+        released = RawInput()
+        game.maybe_go_back(held)  # still held from seeding -- must not fire
+        game.maybe_go_back(released)  # released
+        with self.assertRaises(SystemExit):
+            game.maybe_go_back(held)  # pressed again -- a genuine fresh press
 
 
 class AttractModeTests(unittest.TestCase):
