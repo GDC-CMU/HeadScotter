@@ -76,21 +76,25 @@ SIM_HZ = 60
 DT = 1.0 / SIM_HZ
 
 # Chosen by tracing this exact seed's demo after adding a real goalkeeper
-# (see headscotter/keeper.py and config.py's KEEPER_* / GOAL_MOUTH_HEIGHT):
-# a defended, full-size goal makes the first rally last considerably
-# longer than an undefended one (contested saves, not just an open net),
-# so this window time-lapses one whole kickoff-to-kickoff cycle rather
-# than sampling it tick-for-tick -- see the module docstring:
+# (see headscotter/keeper.py and config.py's KEEPER_* / GOAL_MOUTH_HEIGHT)
+# and, later, the field-player-vs-keeper separation fix in players.py
+# (headscotter.separate_player_from_keeper): both changes shift bodies'
+# exact trajectories frame to frame, so these tick numbers are re-traced
+# after each such change rather than assumed stable. A defended,
+# full-size goal makes the first rally last considerably longer than an
+# undefended one (contested saves, not just an open net), so this window
+# time-lapses one whole kickoff-to-kickoff cycle rather than sampling it
+# tick-for-tick -- see the module docstring:
 #
 #   tick    0 : KICKOFF, ball at center (the window's opening frame)
-#   tick   72 : PLAYING begins -- sustained back-and-forth, saves, and rebounds
-#   tick 1466 : GOAL -- the keeper is finally beaten (score 0-1)
-#   tick 1587 : KICKOFF again, ball reset to center
-#   tick 1659 : PLAYING resumes -- the window's closing frame, a visual
+#   tick   71 : PLAYING begins -- sustained back-and-forth, saves, and rebounds
+#   tick 1476 : GOAL -- the keeper is finally beaten (score 0-1)
+#   tick 1597 : KICKOFF again, ball reset to center
+#   tick 1669 : PLAYING resumes -- the window's closing frame, a visual
 #               near-match for its own opening frame so the loop-back
 #               reads as another kickoff rather than a jump to a random
 #               moment.
-WINDOW_TICKS = 1659
+WINDOW_TICKS = 1669
 
 FPS = 12  # independent of how the window was sampled -- see module docstring
 # 46 frames, evenly sampled across the whole WINDOW_TICKS span (not
