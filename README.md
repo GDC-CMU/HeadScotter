@@ -78,6 +78,7 @@ headscotter/
   physics.py              ball gravity/bounce/collision -- no pygame import
   players.py              player movement, jump, kick -- no pygame import
   cpu.py                   the 1P opponent's AI -- no pygame import
+  keeper.py                the automated goalkeeper defending each goal -- no pygame import
   match.py                 clock, scoring, sudden death, high-score file -- no pygame import
   input.py                 two joysticks + keyboard -> game actions -- no pygame import
   game.py                  the state machine (only pygame-touching module besides render/assets)
@@ -91,11 +92,11 @@ assets/preview/           gallery attract-mode preview loop (see below)
 docs/screenshots/         what it currently looks like
 ```
 
-`config.py`, `physics.py`, `players.py`, `cpu.py`, `match.py`, and
-`input.py` never import pygame -- enforced by
+`config.py`, `physics.py`, `players.py`, `cpu.py`, `keeper.py`,
+`match.py`, and `input.py` never import pygame -- enforced by
 `tests/test_layering.py` -- so the ball physics, match rules, CPU
-behaviour, and input resolution are all testable with plain `unittest`,
-no display required.
+behaviour, keeper behaviour, and input resolution are all testable with
+plain `unittest`, no display required.
 
 ## Tuning the physics
 

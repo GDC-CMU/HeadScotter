@@ -82,9 +82,26 @@ cool blue-grey with orange trim.
 | File | Size | Used for |
 |---|---|---|
 | `ball.png` | 36x36 | The ball. Matches `BALL_RADIUS` in `headscotter/config.py`. |
-| `goal.png` | 90x200 | One goal frame. Drawn once per end; the right-hand goal is this same file mirrored in code, not a separate asset. Authored with the front post at the image's right edge and the net trailing off the left edge, so it opens correctly into the pitch when anchored at the goal line (see `render._draw_goals()`). The crossbar sits `GOAL_MOUTH_HEIGHT` px up from the image's bottom, matching where the ball can actually score. |
+| `goal.png` | 90x200 | One goal frame. Drawn once per end; the right-hand goal is this same file mirrored in code, not a separate asset. Authored with the front post at the image's right edge and the net trailing off the left edge, so it opens correctly into the pitch when anchored at the goal line (see `render._draw_goals()`). The crossbar sits `GOAL_MOUTH_HEIGHT` px up from the image's bottom, matching where the ball can actually score. Sized to read as a real, credible net at full screen size -- taller than a standing player -- not shrunk to hold down scoring; see `headscotter/keeper.py` for what actually defends it. |
 | `pitch_bg.png` | 800x600 | The full-screen background: grass stripes below `PITCH_TOP`, a stand/sky band above it. The halfway line, center circle, and touchline are drawn directly by `render.py`, not baked into this image. |
 | `hud_ball_icon.png` | 32x32 | A small ball glyph used as the "-" divider between the two scores in the HUD. |
+
+## Goalkeepers
+
+Every goal has its own automated keeper (`headscotter/keeper.py`) -- a
+simple vertical paddle, never controlled by a human or the CPU field-AI,
+that glides up and down within the goal mouth to make saves. It never
+runs, jumps, or leaves a fixed depth in front of its goal line, so it
+only needs **one static pose each**, not a walk cycle:
+
+| File | Size | Used for |
+|---|---|---|
+| `keeper_left.png` | 72x72 | Defends the left goal. Team-colored to match Scotty (cream body, CMU-red cap/gloves trim), so it visually reads as "on Scotty's side" even though it's automated. |
+| `keeper_right.png` | 72x72 | Defends the right goal. Team-colored to match the rival (blue body, orange trim). |
+
+The collidable circle is `KEEPER_RADIUS` (32px, `headscotter/config.py`),
+centered on the sprite -- keep a replacement sprite's body centered in
+the canvas so it still lines up with where the ball actually bounces off it.
 
 ## Adding a brand-new sprite
 
