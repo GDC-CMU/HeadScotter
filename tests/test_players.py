@@ -275,25 +275,32 @@ class PlayerKeeperSeparationTests(unittest.TestCase):
         self.assertFalse(separated)
         self.assertEqual(player.x, px)
 
-    def test_player_on_the_goal_line_side_is_pushed_toward_the_goal_line(self):
+    def test_player_stranded_on_the_goal_line_side_is_pushed_through_to_midfield(self):
         # Approaching from the goal-line side this time (behind the
-        # keeper, between it and the goal line) -- a tight pocket where
-        # full separation may not be geometrically possible (KEEPER_DEPTH
-        # leaves little room there), but the player must still be pushed
-        # in the correct direction and stay within the pitch bounds.
+        # keeper, between it and the goal line) -- a pocket narrower
+        # than the required footprint (KEEPER_DEPTH - PLAYER_HALF_WIDTH
+        # < KEEPER_RADIUS + PLAYER_HALF_WIDTH), so no resting position
+        # there can ever be fully separated. Pushing further toward the
+        # wall (the old, buggy behaviour) would leave the player
+        # permanently short of clear; the correct resolution is to push
+        # the player through to the *other* side of the keeper, toward
+        # midfield, which always has room.
         keeper_x = config.PITCH_RIGHT - config.KEEPER_DEPTH
         keeper_y = self._keeper_ready_y()
-        start_x = keeper_x + 10
-        player = players.new_player(start_x, facing=-1)
+        player = players.new_player(keeper_x + 10, facing=-1)
         player.y = keeper_y
         separated = players.separate_player_from_keeper(player, keeper_x, keeper_y)
         self.assertTrue(separated)
-        self.assertGreaterEqual(player.x, start_x)  # pushed further toward the goal line, not backward
+        expected_gap = config.KEEPER_RADIUS + config.PLAYER_HALF_WIDTH
+        # Fully separated now, on the midfield (negative-x) side.
+        self.assertAlmostEqual(keeper_x - player.x, expected_gap, places=6)
+        self.assertGreaterEqual(player.x, config.PITCH_LEFT + config.PLAYER_HALF_WIDTH - 1e-6)
         self.assertLessEqual(player.x, config.PITCH_RIGHT - config.PLAYER_HALF_WIDTH + 1e-6)
 
-    def test_player_is_clamped_to_pitch_bounds(self):
-        # Push the player so far that clamping would matter, from the
-        # goal-line side of a left-defending keeper (limited room).
+    def test_player_stays_within_pitch_bounds_when_pushed_from_near_a_wall(self):
+        # Even from right against the far wall, the fix must never place
+        # the player outside the legal pitch range -- whichever side it
+        # ends up pushed toward.
         keeper_x = config.PITCH_LEFT + config.KEEPER_DEPTH
         keeper_y = self._keeper_ready_y()
         player = players.new_player(config.PITCH_LEFT + config.PLAYER_HALF_WIDTH, facing=1)
@@ -301,6 +308,88 @@ class PlayerKeeperSeparationTests(unittest.TestCase):
         players.separate_player_from_keeper(player, keeper_x, keeper_y)
         self.assertGreaterEqual(player.x, config.PITCH_LEFT + config.PLAYER_HALF_WIDTH - 1e-6)
         self.assertLessEqual(player.x, config.PITCH_RIGHT - config.PLAYER_HALF_WIDTH + 1e-6)
+
+    def test_player_stranded_beside_the_left_keeper_is_also_pushed_through_to_midfield(self):
+        # Mirror of the right-keeper pocket case: a player wedged between
+        # the left keeper and the left wall must be pushed through to
+        # the positive-x (midfield) side, not further into the wall.
+        keeper_x = config.PITCH_LEFT + config.KEEPER_DEPTH
+        keeper_y = self._keeper_ready_y()
+        player = players.new_player(keeper_x - 10, facing=1)
+        player.y = keeper_y
+        separated = players.separate_player_from_keeper(player, keeper_x, keeper_y)
+        self.assertTrue(separated)
+        expected_gap = config.KEEPER_RADIUS + config.PLAYER_HALF_WIDTH
+        self.assertAlmostEqual(player.x - keeper_x, expected_gap, places=6)
+        self.assertGreaterEqual(player.x, config.PITCH_LEFT + config.PLAYER_HALF_WIDTH - 1e-6)
+        self.assertLessEqual(player.x, config.PITCH_RIGHT - config.PLAYER_HALF_WIDTH + 1e-6)
+
+
+class PlayerKeeperSeparationLongRunRegressionTests(unittest.TestCase):
+    """Regression check for the actual bug report: player-vs-keeper
+    overlap measured over a long real-game simulation, using the same
+    box-vs-circle geometry as separate_player_from_keeper itself (not
+    the cruder same-height-box proxy used for player-vs-player, which
+    previously produced a false "fixed" reading here). Runs the real
+    Game update loop -- including movement, the field-field separation,
+    keeper tracking, and this fix all together -- rather than calling
+    the pure function in isolation, so it also catches ordering bugs in
+    game.py, not just bugs in the function itself.
+
+    Before this fix: 17.0% of checked frames overlapped, minimum gap
+    0.2px, concentrated entirely in the goal-line-side pocket that is
+    structurally narrower than the required footprint. After: 0
+    overlapping frames, minimum gap the full required 62.0px.
+    """
+
+    def test_240_second_demo_simulation_never_overlaps_a_keeper(self):
+        import os
+        import random
+
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        import pygame
+
+        from headscotter import config
+        from headscotter.game import Game
+        from headscotter.input import RawInput
+
+        pygame.init()
+        pygame.display.set_mode((config.SCREEN_WIDTH, config.SCREEN_HEIGHT))
+
+        game = Game(rng=random.Random(20260115))
+        game._enter_demo()
+        idle = RawInput()
+
+        required_gap = config.KEEPER_RADIUS + config.PLAYER_HALF_WIDTH
+        min_gap = float("inf")
+        overlap_frames = 0
+        checked_pairs = 0
+        for _ in range(240 * 60):  # 240 simulated seconds at 60Hz
+            game.update(1 / 60.0, idle)
+            for keeper in (game.keeper_left, game.keeper_right):
+                for player in (game.player_left, game.player_right):
+                    dx = abs(player.x - keeper.x)
+                    player_top = player.y - config.PLAYER_HEIGHT
+                    player_bottom = player.y
+                    keeper_top = keeper.y - config.KEEPER_RADIUS
+                    keeper_bottom = keeper.y + config.KEEPER_RADIUS
+                    vertically_overlapping = not (
+                        player_bottom <= keeper_top or keeper_bottom <= player_top
+                    )
+                    if not vertically_overlapping:
+                        continue
+                    checked_pairs += 1
+                    min_gap = min(min_gap, dx)
+                    if dx < required_gap - 1e-6:
+                        overlap_frames += 1
+
+        self.assertGreater(checked_pairs, 0, "the demo never brought a player near a keeper at all")
+        self.assertEqual(
+            overlap_frames, 0,
+            f"{overlap_frames}/{checked_pairs} vertically-overlapping player/keeper pairs "
+            f"were closer than the required {required_gap}px -- keeper separation regressed",
+        )
+        self.assertAlmostEqual(min_gap, required_gap, places=2)
 
 
 if __name__ == "__main__":

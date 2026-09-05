@@ -171,12 +171,22 @@ def separate_player_from_keeper(player: Player, keeper_x: float, keeper_y: float
     ``KEEPER_RADIUS`` circle centered on ``keeper_y``; the player's body
     is its usual feet-to-head-top ``PLAYER_HEIGHT`` box.
 
-    The player is pushed toward whichever side of the keeper it is
-    already on -- in practice this is away from the goal line, back
-    toward the pitch, since a keeper standing at ``KEEPER_DEPTH`` in
-    front of its own goal line leaves only a sliver of room on the
-    goal-line side for a player to occupy in the first place. Clamped to
-    the pitch bounds afterward like any other player movement.
+    The player is normally pushed toward whichever side of the keeper it
+    is already on -- in practice this is away from the goal line, back
+    toward the pitch. But that side is not always usable: with
+    ``KEEPER_DEPTH`` this shallow, the sliver of room between the keeper
+    and the goal-line-side wall is narrower than ``footprint``, so no
+    resting position there can ever be fully separated -- pushing that
+    way would just pin the player against the wall a few pixels short of
+    clear, forever (this was the actual bug: a player who ended up on
+    that side, e.g. having jumped clean over the keeper and landed
+    behind it, could never be resolved). So the preferred side is only
+    used if a fully-separated resting position for it actually fits
+    within the pitch bounds; otherwise the player is pushed through to
+    the *other* side of the keeper -- toward midfield, which (given the
+    pitch is far wider than one keeper's footprint) always has room.
+    Clamped to the pitch bounds afterward regardless, like any other
+    player movement.
 
     Returns True if a separation was applied; a player that doesn't
     overlap the keeper is left completely untouched.
@@ -197,19 +207,35 @@ def separate_player_from_keeper(player: Player, keeper_x: float, keeper_y: float
     if overlap <= 0.0:
         return False
 
-    # Push away from wherever the overlap actually places the player
-    # relative to the keeper. On the rare exact tie (dx == 0), fall back
-    # to pushing away from the nearer goal line instead of an arbitrary
-    # default.
-    if dx > 0.0:
-        direction = 1.0
-    elif dx < 0.0:
-        direction = -1.0
-    else:
-        direction = 1.0 if keeper_x <= config.PITCH_CENTER_X else -1.0
     low = config.PITCH_LEFT + config.PLAYER_HALF_WIDTH
     high = config.PITCH_RIGHT - config.PLAYER_HALF_WIDTH
-    player.x = physics.clamp(player.x + direction * overlap, low, high)
+
+    # Which side the player would naturally be pushed toward. On the
+    # rare exact tie (dx == 0), fall back to pushing away from the
+    # nearer goal line instead of an arbitrary default.
+    if dx > 0.0:
+        push_positive = True
+    elif dx < 0.0:
+        push_positive = False
+    else:
+        push_positive = keeper_x <= config.PITCH_CENTER_X
+
+    # Does a fully-separated resting position actually fit on each side,
+    # within the pitch bounds?
+    fits_positive_side = keeper_x + footprint <= high + 1e-9
+    fits_negative_side = keeper_x - footprint >= low - 1e-9
+
+    if push_positive and not fits_positive_side and fits_negative_side:
+        push_positive = False
+    elif not push_positive and not fits_negative_side and fits_positive_side:
+        push_positive = True
+    # If neither side fits (a pitch narrower than two keeper footprints,
+    # not the case for any real configuration here), fall back to the
+    # naturally-preferred side; there is no fully correct answer to fall
+    # back on in that case anyway.
+
+    direction = 1.0 if push_positive else -1.0
+    player.x = physics.clamp(keeper_x + direction * footprint, low, high)
 
     return True
 
