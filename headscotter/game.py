@@ -294,11 +294,30 @@ class Game:
             kick_r = input_mod.wants_kick_p2(raw)
         players.update_player(self.player_right, dt, move_r, jump_r)
 
-        # Keep the two bodies from interpenetrating -- after both have
-        # moved for the frame, and before any ball interaction, so a
-        # kick/header below always resolves from an already-legal,
-        # separated position.
+        # Keep the two field-player bodies from interpenetrating -- after
+        # both have moved for the frame, before either the keepers move
+        # or any ball interaction, so everything below resolves from an
+        # already-legal, separated position.
         players.separate_players(self.player_left, self.player_right)
+
+        # Keepers react to wherever the ball was left at the end of the
+        # previous frame (their own reaction lag already accounts for
+        # this) and move accordingly -- before any player-keeper
+        # separation or ball interaction this frame.
+        keeper_mod.update_keeper(self.keeper_left, dt, self.ball, self.rng)
+        keeper_mod.update_keeper(self.keeper_right, dt, self.ball, self.rng)
+
+        # Now that every body has finished moving for the frame, keep a
+        # field player from standing inside a keeper -- one-sided (only
+        # the player is pushed; the keeper is a paddle pinned to its own
+        # goal line and must never be shoved off it, or a player could
+        # drag it out of the goal and walk the ball in). A player can in
+        # principle wander deep enough to reach either keeper, so check
+        # both against both.
+        players.separate_player_from_keeper(self.player_left, self.keeper_left.x, self.keeper_left.y)
+        players.separate_player_from_keeper(self.player_left, self.keeper_right.x, self.keeper_right.y)
+        players.separate_player_from_keeper(self.player_right, self.keeper_left.x, self.keeper_left.y)
+        players.separate_player_from_keeper(self.player_right, self.keeper_right.x, self.keeper_right.y)
 
         # A successful kick and the passive header bounce are mutually
         # exclusive in the same frame for the same player -- otherwise a
@@ -311,12 +330,9 @@ class Game:
         if not kicked_r:
             players.apply_head_collision(self.player_right, self.ball)
 
-        # Keepers react to wherever the ball actually is now (post-kick/
-        # header), and get the last save opportunity before the ball's
-        # own goal-line check below -- exactly like a real keeper facing
-        # a shot that's already been struck.
-        keeper_mod.update_keeper(self.keeper_left, dt, self.ball, self.rng)
-        keeper_mod.update_keeper(self.keeper_right, dt, self.ball, self.rng)
+        # The keepers get the last save opportunity before the ball's own
+        # goal-line check below -- exactly like a real keeper facing a
+        # shot that's already been struck.
         keeper_mod.apply_keeper_collision(self.keeper_left, self.ball)
         keeper_mod.apply_keeper_collision(self.keeper_right, self.ball)
 

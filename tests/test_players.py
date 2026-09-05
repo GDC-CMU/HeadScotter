@@ -228,5 +228,80 @@ class PlayerSeparationTests(unittest.TestCase):
         self.assertTrue(separated)
 
 
+class PlayerKeeperSeparationTests(unittest.TestCase):
+    """players.separate_player_from_keeper() -- one-sided: the keeper
+    (a paddle pinned to its goal line) never moves, only the field
+    player does."""
+
+    def _keeper_ready_y(self) -> float:
+        return (config.CROSSBAR_Y + config.GROUND_Y) / 2.0
+
+    def test_player_approaching_from_the_pitch_side_ends_up_exactly_touching(self):
+        keeper_x = config.PITCH_LEFT + config.KEEPER_DEPTH
+        keeper_y = self._keeper_ready_y()
+        player = players.new_player(keeper_x + 20, facing=-1)  # overlapping, from the pitch side
+        player.y = keeper_y  # same height as the keeper -- full vertical overlap
+        separated = players.separate_player_from_keeper(player, keeper_x, keeper_y)
+        self.assertTrue(separated)
+        expected_gap = config.KEEPER_RADIUS + config.PLAYER_HALF_WIDTH
+        self.assertAlmostEqual(player.x - keeper_x, expected_gap, places=6)
+
+    def test_keepers_x_is_never_changed_by_the_collision(self):
+        keeper_x = config.PITCH_RIGHT - config.KEEPER_DEPTH
+        keeper_y = self._keeper_ready_y()
+        player = players.new_player(keeper_x - 20, facing=1)
+        player.y = keeper_y
+        players.separate_player_from_keeper(player, keeper_x, keeper_y)
+        self.assertEqual(keeper_x, config.PITCH_RIGHT - config.KEEPER_DEPTH)
+
+    def test_player_jumping_clear_over_the_keeper_is_untouched(self):
+        keeper_x = config.PITCH_LEFT + config.KEEPER_DEPTH
+        keeper_y = self._keeper_ready_y()
+        player = players.new_player(keeper_x, facing=1)  # same x -- full horizontal overlap
+        # Feet well above the keeper's topmost reach -- a clean lob attempt.
+        player.y = keeper_y - config.KEEPER_RADIUS - config.PLAYER_HEIGHT - 5.0
+        px = player.x
+        separated = players.separate_player_from_keeper(player, keeper_x, keeper_y)
+        self.assertFalse(separated)
+        self.assertEqual(player.x, px)
+
+    def test_non_overlapping_bodies_are_untouched(self):
+        keeper_x = config.PITCH_LEFT + config.KEEPER_DEPTH
+        keeper_y = self._keeper_ready_y()
+        player = players.new_player(config.PITCH_CENTER_X, facing=1)
+        player.y = keeper_y
+        px = player.x
+        separated = players.separate_player_from_keeper(player, keeper_x, keeper_y)
+        self.assertFalse(separated)
+        self.assertEqual(player.x, px)
+
+    def test_player_on_the_goal_line_side_is_pushed_toward_the_goal_line(self):
+        # Approaching from the goal-line side this time (behind the
+        # keeper, between it and the goal line) -- a tight pocket where
+        # full separation may not be geometrically possible (KEEPER_DEPTH
+        # leaves little room there), but the player must still be pushed
+        # in the correct direction and stay within the pitch bounds.
+        keeper_x = config.PITCH_RIGHT - config.KEEPER_DEPTH
+        keeper_y = self._keeper_ready_y()
+        start_x = keeper_x + 10
+        player = players.new_player(start_x, facing=-1)
+        player.y = keeper_y
+        separated = players.separate_player_from_keeper(player, keeper_x, keeper_y)
+        self.assertTrue(separated)
+        self.assertGreaterEqual(player.x, start_x)  # pushed further toward the goal line, not backward
+        self.assertLessEqual(player.x, config.PITCH_RIGHT - config.PLAYER_HALF_WIDTH + 1e-6)
+
+    def test_player_is_clamped_to_pitch_bounds(self):
+        # Push the player so far that clamping would matter, from the
+        # goal-line side of a left-defending keeper (limited room).
+        keeper_x = config.PITCH_LEFT + config.KEEPER_DEPTH
+        keeper_y = self._keeper_ready_y()
+        player = players.new_player(config.PITCH_LEFT + config.PLAYER_HALF_WIDTH, facing=1)
+        player.y = keeper_y
+        players.separate_player_from_keeper(player, keeper_x, keeper_y)
+        self.assertGreaterEqual(player.x, config.PITCH_LEFT + config.PLAYER_HALF_WIDTH - 1e-6)
+        self.assertLessEqual(player.x, config.PITCH_RIGHT - config.PLAYER_HALF_WIDTH + 1e-6)
+
+
 if __name__ == "__main__":
     unittest.main()

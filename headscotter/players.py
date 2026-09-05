@@ -156,6 +156,64 @@ def separate_players(a: Player, b: Player) -> bool:
     return True
 
 
+def separate_player_from_keeper(player: Player, keeper_x: float, keeper_y: float) -> bool:
+    """Push a player out of an overlapping keeper -- one-sided, unlike
+    :func:`separate_players`: the keeper never moves (it is a paddle
+    pinned at a fixed depth in front of its own goal line; letting a
+    player shove it sideways would let the player drag it clean out of
+    the goal and walk the ball in), so the player alone absorbs the
+    *entire* overlap.
+
+    Gated on overlap in **both** axes, the same rule as
+    :func:`separate_players` and for the same reason: a player who has
+    jumped clear over the keeper's head (e.g. attempting a lob) is not
+    colliding with it and must be left alone. The keeper's collider is a
+    ``KEEPER_RADIUS`` circle centered on ``keeper_y``; the player's body
+    is its usual feet-to-head-top ``PLAYER_HEIGHT`` box.
+
+    The player is pushed toward whichever side of the keeper it is
+    already on -- in practice this is away from the goal line, back
+    toward the pitch, since a keeper standing at ``KEEPER_DEPTH`` in
+    front of its own goal line leaves only a sliver of room on the
+    goal-line side for a player to occupy in the first place. Clamped to
+    the pitch bounds afterward like any other player movement.
+
+    Returns True if a separation was applied; a player that doesn't
+    overlap the keeper is left completely untouched.
+    """
+    dx = player.x - keeper_x
+    footprint = config.KEEPER_RADIUS + config.PLAYER_HALF_WIDTH
+    if abs(dx) >= footprint:
+        return False  # no horizontal overlap
+
+    player_top = player.y - config.PLAYER_HEIGHT
+    player_bottom = player.y
+    keeper_top = keeper_y - config.KEEPER_RADIUS
+    keeper_bottom = keeper_y + config.KEEPER_RADIUS
+    if player_bottom <= keeper_top or keeper_bottom <= player_top:
+        return False  # no vertical overlap -- e.g. the player jumped clean over it
+
+    overlap = footprint - abs(dx)
+    if overlap <= 0.0:
+        return False
+
+    # Push away from wherever the overlap actually places the player
+    # relative to the keeper. On the rare exact tie (dx == 0), fall back
+    # to pushing away from the nearer goal line instead of an arbitrary
+    # default.
+    if dx > 0.0:
+        direction = 1.0
+    elif dx < 0.0:
+        direction = -1.0
+    else:
+        direction = 1.0 if keeper_x <= config.PITCH_CENTER_X else -1.0
+    low = config.PITCH_LEFT + config.PLAYER_HALF_WIDTH
+    high = config.PITCH_RIGHT - config.PLAYER_HALF_WIDTH
+    player.x = physics.clamp(player.x + direction * overlap, low, high)
+
+    return True
+
+
 def try_kick(player: Player, ball: Ball, kick_pressed: bool) -> bool:
     """If ``kick_pressed`` and the ball is within this player's kick
     hit-box (in front of them, at foot height) and their cooldown has

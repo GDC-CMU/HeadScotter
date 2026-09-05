@@ -354,8 +354,18 @@ class HeadlessStabilityTests(unittest.TestCase):
         self.assertEqual(game.state, GameState.RESULT)
         self.assertGreaterEqual(game.match.score_left, 0)
         self.assertGreaterEqual(game.match.score_right, 0)
-        self.assertGreaterEqual(game.ball.x, config.PITCH_LEFT - config.BALL_RADIUS - 1.0)
-        self.assertLessEqual(game.ball.x, config.PITCH_RIGHT + config.BALL_RADIUS + 1.0)
+        # The ball can travel up to BALL_MAX_SPEED px/sec; the instant it
+        # fully crosses a goal line (potentially at full speed, e.g. in
+        # sudden death) the match ends and physics stops immediately, so
+        # its final frozen position can be up to one frame's worth of
+        # travel past the line -- not just BALL_RADIUS past it.
+        max_travel_per_frame = config.BALL_MAX_SPEED * (1 / 60.0)
+        self.assertGreaterEqual(
+            game.ball.x, config.PITCH_LEFT - config.BALL_RADIUS - max_travel_per_frame - 5.0,
+        )
+        self.assertLessEqual(
+            game.ball.x, config.PITCH_RIGHT + config.BALL_RADIUS + max_travel_per_frame + 5.0,
+        )
 
     def test_render_frame_does_not_raise(self):
         from headscotter import render
