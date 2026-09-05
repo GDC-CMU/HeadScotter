@@ -271,6 +271,12 @@ class Game:
             kick_r = input_mod.wants_kick_p2(raw)
         players.update_player(self.player_right, dt, move_r, jump_r)
 
+        # Keep the two bodies from interpenetrating -- after both have
+        # moved for the frame, and before any ball interaction, so a
+        # kick/header below always resolves from an already-legal,
+        # separated position.
+        players.separate_players(self.player_left, self.player_right)
+
         # A successful kick and the passive header bounce are mutually
         # exclusive in the same frame for the same player -- otherwise a
         # kick could be immediately re-reflected by an overlapping head

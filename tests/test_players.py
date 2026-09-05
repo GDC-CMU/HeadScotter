@@ -140,5 +140,93 @@ class NeverPermanentlyStuckTests(unittest.TestCase):
         self.assertNotEqual((ball.vx, ball.vy), (0.0, 0.0))
 
 
+class PlayerSeparationTests(unittest.TestCase):
+    """players.separate_players() -- the two bodies must never
+    interpenetrate, but a jumping player passing over the other's head
+    (no vertical overlap) is a legitimate move and must be left alone."""
+
+    def test_bodies_approaching_from_each_side_end_up_exactly_touching(self):
+        a = players.new_player(config.PITCH_CENTER_X - 10, facing=1)
+        b = players.new_player(config.PITCH_CENTER_X + 10, facing=-1)  # overlapping by 40px
+        separated = players.separate_players(a, b)
+        self.assertTrue(separated)
+        self.assertAlmostEqual(b.x - a.x, config.PLAYER_HALF_WIDTH * 2.0, places=6)
+
+    def test_separation_is_symmetric_in_the_open_pitch(self):
+        start_a, start_b = config.PITCH_CENTER_X - 10, config.PITCH_CENTER_X + 10
+        a = players.new_player(start_a, facing=1)
+        b = players.new_player(start_b, facing=-1)
+        players.separate_players(a, b)
+        # Overlap = footprint(60) - separation(20) = 40; each player
+        # takes half (20px) of it, away from the other, symmetrically.
+        overlap = config.PLAYER_HALF_WIDTH * 2.0 - (start_b - start_a)
+        self.assertAlmostEqual(start_a - a.x, overlap / 2.0, places=6)
+        self.assertAlmostEqual(b.x - start_b, overlap / 2.0, places=6)
+
+    def test_overlapping_players_are_pushed_apart_regardless_of_order(self):
+        # b to a's left this time -- the push directions must flip accordingly.
+        a = players.new_player(config.PITCH_CENTER_X + 10, facing=-1)
+        b = players.new_player(config.PITCH_CENTER_X - 10, facing=1)
+        players.separate_players(a, b)
+        self.assertAlmostEqual(a.x - b.x, config.PLAYER_HALF_WIDTH * 2.0, places=6)
+
+    def test_player_against_the_left_wall_is_not_pushed_out_of_bounds(self):
+        wall_x = config.PITCH_LEFT + config.PLAYER_HALF_WIDTH
+        a = players.new_player(wall_x, facing=1)  # already pinned at the left edge
+        b = players.new_player(wall_x + 20, facing=-1)  # overlapping by 40px
+        separated = players.separate_players(a, b)
+        self.assertTrue(separated)
+        self.assertEqual(a.x, wall_x)  # could not move further left -- stayed put
+        # b absorbed the *entire* separation instead of just half.
+        self.assertAlmostEqual(b.x - a.x, config.PLAYER_HALF_WIDTH * 2.0, places=6)
+        self.assertGreaterEqual(a.x, config.PITCH_LEFT + config.PLAYER_HALF_WIDTH - 1e-6)
+
+    def test_player_against_the_right_wall_is_not_pushed_out_of_bounds(self):
+        wall_x = config.PITCH_RIGHT - config.PLAYER_HALF_WIDTH
+        b = players.new_player(wall_x, facing=-1)  # already pinned at the right edge
+        a = players.new_player(wall_x - 20, facing=1)  # overlapping by 40px
+        players.separate_players(a, b)
+        self.assertEqual(b.x, wall_x)
+        self.assertAlmostEqual(b.x - a.x, config.PLAYER_HALF_WIDTH * 2.0, places=6)
+        self.assertLessEqual(b.x, config.PITCH_RIGHT - config.PLAYER_HALF_WIDTH + 1e-6)
+
+    def test_non_overlapping_players_are_left_completely_untouched(self):
+        a = players.new_player(config.PITCH_CENTER_X - 200, facing=1)
+        b = players.new_player(config.PITCH_CENTER_X + 200, facing=-1)
+        ax, bx = a.x, b.x
+        separated = players.separate_players(a, b)
+        self.assertFalse(separated)
+        self.assertEqual(a.x, ax)
+        self.assertEqual(b.x, bx)
+
+    def test_players_touching_but_not_overlapping_are_untouched(self):
+        # Exactly at the footprint boundary -- not yet overlapping.
+        a = players.new_player(config.PITCH_CENTER_X, facing=1)
+        b = players.new_player(config.PITCH_CENTER_X + config.PLAYER_HALF_WIDTH * 2.0, facing=-1)
+        separated = players.separate_players(a, b)
+        self.assertFalse(separated)
+
+    def test_a_jumping_player_passing_over_the_other_is_not_separated(self):
+        """Vertical overlap is required too: a player whose feet have
+        cleared the other's head height is legitimately jumping over
+        them (e.g. contesting a header), not colliding -- this must not
+        be blocked just because their horizontal footprints overlap."""
+        a = players.new_player(config.PITCH_CENTER_X, facing=1)  # standing on the ground
+        b = players.new_player(config.PITCH_CENTER_X, facing=-1)  # same x -- full horizontal overlap
+        b.y = config.GROUND_Y - config.PLAYER_HEIGHT - 5.0  # airborne, clear above a's head
+        ax, bx = a.x, b.x
+        separated = players.separate_players(a, b)
+        self.assertFalse(separated)
+        self.assertEqual(a.x, ax)
+        self.assertEqual(b.x, bx)
+
+    def test_a_low_jump_that_still_overlaps_vertically_is_still_separated(self):
+        a = players.new_player(config.PITCH_CENTER_X - 10, facing=1)
+        b = players.new_player(config.PITCH_CENTER_X + 10, facing=-1)
+        b.y = config.GROUND_Y - 20.0  # a small hop -- well within PLAYER_HEIGHT of a's feet
+        separated = players.separate_players(a, b)
+        self.assertTrue(separated)
+
+
 if __name__ == "__main__":
     unittest.main()

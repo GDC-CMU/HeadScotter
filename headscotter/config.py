@@ -54,14 +54,22 @@ GOAL_MOUTH_HEIGHT = 170
 CROSSBAR_Y = GROUND_Y - GOAL_MOUTH_HEIGHT
 
 # --- Player geometry ------------------------------------------------------------
-# Head-soccer characters are drawn with a big head and a small body; only the
-# head is a solid collider (matching the genre -- bodies are cosmetic). All
-# distances below are from the player's feet anchor (x, y), which is what
-# players.Player.x/y actually track.
+# Head-soccer characters are drawn with a big head and a small body; against
+# the *ball*, only the head is a solid collider (matching the genre -- the
+# body doesn't head/kick the ball). Against *each other*, both players'
+# whole bodies block one another (see players.separate_players()) so
+# closing distance actually means something. All distances below are from
+# the player's feet anchor (x, y), which is what players.Player.x/y track.
 HEAD_RADIUS = 34
 HEAD_OFFSET_Y = 78              # feet -> head-center vertical distance
 PLAYER_HALF_WIDTH = 30           # how close feet may get to a goal line/each other's clamp
 PLAYER_START_INSET = 170         # how far in from each goal line a kickoff starts
+# Approximate feet-to-head-top body height, used only to gate player-vs-
+# player separation on genuine vertical overlap (see players.separate_players()):
+# a jumping player whose feet have cleared the other's head height is
+# passing over them, which is a legitimate head-soccer move and must not
+# be blocked just because their footprints still overlap horizontally.
+PLAYER_HEIGHT = HEAD_OFFSET_Y + HEAD_RADIUS
 
 # --- Ball geometry & mass ------------------------------------------------------
 BALL_RADIUS = 17

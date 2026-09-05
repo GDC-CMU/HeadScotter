@@ -87,6 +87,75 @@ def update_player(player: Player, dt: float, move: int, jump_pressed: bool) -> N
     step_player_physics(player, dt)
 
 
+def separate_players(a: Player, b: Player) -> bool:
+    """Push two overlapping player bodies apart horizontally so they can
+    never interpenetrate. Call this once per frame after both players
+    have moved (:func:`update_player`) and before any ball interaction,
+    so a kick/header resolves from an already-legal, separated position.
+
+    Gated on overlap in **both** axes -- horizontal (each player's
+    ``PLAYER_HALF_WIDTH``-wide footprint) and vertical (each player's
+    ``PLAYER_HEIGHT``-tall body, feet to head-top). This is a deliberate
+    design choice, not an oversight: a jumping player passing directly
+    over the other's head (e.g. to contest a header) is a legitimate,
+    genre-standard move, and must not be blocked just because their
+    horizontal footprints still overlap. Only bodies that are genuinely
+    overlapping at roughly the same height are ever separated.
+
+    Neither player is privileged -- on an open pitch each is pushed out
+    by exactly half the overlap, so separation is symmetric. If one of
+    them is pinned against a pitch-edge clamp and has less than half the
+    overlap worth of room to give, the other absorbs whatever distance
+    is left instead (up to its own room against the far wall), so the
+    pair always ends up fully separated (exactly touching, never
+    overlapping) rather than partially resolved wherever that's
+    geometrically possible. Neither player's position can ever move
+    outside the pitch bounds as a result of this.
+
+    Returns True if a separation was applied (i.e. the bodies actually
+    overlapped); players that don't overlap are left completely untouched.
+    """
+    dx = b.x - a.x
+    footprint = config.PLAYER_HALF_WIDTH * 2.0
+    if abs(dx) >= footprint:
+        return False  # no horizontal overlap
+    if abs(a.y - b.y) >= config.PLAYER_HEIGHT:
+        return False  # no vertical overlap -- e.g. one has jumped clean over the other
+
+    overlap = footprint - abs(dx)
+    if overlap <= 0.0:
+        return False
+
+    # +1 if b is to a's right (or exactly coincident), -1 if to its left --
+    # `a` is pushed by -direction and `b` by +direction, i.e. each moves
+    # further in the direction it's already on, away from the other.
+    direction = 1.0 if dx >= 0.0 else -1.0
+    low = config.PITCH_LEFT + config.PLAYER_HALF_WIDTH
+    high = config.PITCH_RIGHT - config.PLAYER_HALF_WIDTH
+
+    # How far each player could move in its own separating direction
+    # before hitting a pitch edge, independent of the other player.
+    room_a = (a.x - low) if direction > 0 else (high - a.x)
+    room_b = (high - b.x) if direction > 0 else (b.x - low)
+
+    half = overlap / 2.0
+    push_a = min(half, room_a)
+    push_b = min(overlap - push_a, room_b)
+    # If `b` still couldn't take its full share (also wall-limited), see
+    # whether `a` has any spare room left to make up the difference --
+    # keeps the pair as fully separated as the pitch geometrically
+    # allows, rather than favoring whichever player happened to be
+    # resolved first.
+    leftover = (overlap - push_a) - push_b
+    if leftover > 0.0:
+        push_a += min(leftover, room_a - push_a)
+
+    a.x -= direction * push_a
+    b.x += direction * push_b
+
+    return True
+
+
 def try_kick(player: Player, ball: Ball, kick_pressed: bool) -> bool:
     """If ``kick_pressed`` and the ball is within this player's kick
     hit-box (in front of them, at foot height) and their cooldown has
