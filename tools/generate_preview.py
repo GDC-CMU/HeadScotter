@@ -75,25 +75,22 @@ SEED = 20260115  # fixed: pins every CPUController aim-error roll the demo makes
 SIM_HZ = 60
 DT = 1.0 / SIM_HZ
 
-# Chosen by tracing this exact seed's demo after the scoring-balance pass
-# (GOAL_MOUTH_HEIGHT, CPU_MAX_ADVANCE_FRACTION, BALL_RESTITUTION_HEAD --
-# see headscotter/config.py): scoring is now realistically paced (this
-# demo's first goal takes ~3.5s of live play to arrive, not the ~1s a
-# single kick used to need before that fix), so one full kickoff-to-
-# kickoff cycle is already a natural, representative slice showing
-# sustained end-to-end play with a real shot and a goal, without needing
-# to stitch together multiple rallies the way the pre-balance-fix window
-# did:
+# Chosen by tracing this exact seed's demo after adding a real goalkeeper
+# (see headscotter/keeper.py and config.py's KEEPER_* / GOAL_MOUTH_HEIGHT):
+# a defended, full-size goal makes the first rally last considerably
+# longer than an undefended one (contested saves, not just an open net),
+# so this window time-lapses one whole kickoff-to-kickoff cycle rather
+# than sampling it tick-for-tick -- see the module docstring:
 #
-#   tick   0 : KICKOFF, ball at center (the window's opening frame)
-#   tick  72 : PLAYING begins -- both players close in and contest the ball
-#  tick  284 : GOAL -- ball crosses into the left goal (score 0-1)
-#  tick  405 : KICKOFF again, ball reset to center
-#  tick  476 : PLAYING resumes -- the window's closing frame, a visual
-#              near-match for its own opening frame so the loop-back
-#              reads as another kickoff rather than a jump to a random
-#              moment.
-WINDOW_TICKS = 476
+#   tick    0 : KICKOFF, ball at center (the window's opening frame)
+#   tick   72 : PLAYING begins -- sustained back-and-forth, saves, and rebounds
+#   tick 1466 : GOAL -- the keeper is finally beaten (score 0-1)
+#   tick 1587 : KICKOFF again, ball reset to center
+#   tick 1659 : PLAYING resumes -- the window's closing frame, a visual
+#               near-match for its own opening frame so the loop-back
+#               reads as another kickoff rather than a jump to a random
+#               moment.
+WINDOW_TICKS = 1659
 
 FPS = 12  # independent of how the window was sampled -- see module docstring
 # 46 frames, evenly sampled across the whole WINDOW_TICKS span (not
