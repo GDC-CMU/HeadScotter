@@ -229,6 +229,15 @@ class AttractModeTests(unittest.TestCase):
 
 
 class HeadlessStabilityTests(unittest.TestCase):
+    def setUp(self):
+        self._tempdir = TemporaryDirectory()
+        self._original_path = config.HIGHSCORE_PATH
+        config.HIGHSCORE_PATH = Path(self._tempdir.name) / "highscore.json"
+
+    def tearDown(self):
+        config.HIGHSCORE_PATH = self._original_path
+        self._tempdir.cleanup()
+
     def test_survives_several_hundred_frames_of_varied_input(self):
         game = Game(rng=random.Random(42))
         game.start_match("2P")
