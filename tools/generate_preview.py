@@ -75,29 +75,31 @@ SEED = 20260115  # fixed: pins every CPUController aim-error roll the demo makes
 SIM_HZ = 60
 DT = 1.0 / SIM_HZ
 
-# Chosen by tracing this exact seed's demo (see the tests/dev session, not
-# reproduced here): the third rally's goal is scored at the LEFT end after
-# the first two are scored at the RIGHT end, so this window is the shortest
-# prefix of the demo that visits *both* halves of the pitch and *both*
-# goals, ending right as the ball resets to center for the next kickoff --
-# a visual near-match for the window's own opening frame, so the loop-back
-# reads as another kickoff rather than a jump to a random moment.
+# Chosen by tracing this exact seed's demo after the scoring-balance pass
+# (GOAL_MOUTH_HEIGHT, CPU_MAX_ADVANCE_FRACTION, BALL_RESTITUTION_HEAD --
+# see headscotter/config.py): scoring is now realistically paced (this
+# demo's first goal takes ~3.5s of live play to arrive, not the ~1s a
+# single kick used to need before that fix), so one full kickoff-to-
+# kickoff cycle is already a natural, representative slice showing
+# sustained end-to-end play with a real shot and a goal, without needing
+# to stitch together multiple rallies the way the pre-balance-fix window
+# did:
 #
-#   tick    0 : KICKOFF, ball at center (the window's opening frame)
-#   tick   72 : PLAYING begins (rally 1)
-#   tick  168 : GOAL -- ball crosses into the right goal (score 1-0)
-#   tick  361 : PLAYING begins (rally 2)
-#   tick  457 : GOAL -- right goal again (score 2-0)
-#   tick  650 : PLAYING begins (rally 3)
-#   tick  732 : GOAL -- LEFT goal this time (score 2-1) -- both goals now covered
-#   tick  853 : KICKOFF again, ball reset to center -- the window's closing frame
-WINDOW_TICKS = 853
+#   tick   0 : KICKOFF, ball at center (the window's opening frame)
+#   tick  72 : PLAYING begins -- both players close in and contest the ball
+#  tick  284 : GOAL -- ball crosses into the left goal (score 0-1)
+#  tick  405 : KICKOFF again, ball reset to center
+#  tick  476 : PLAYING resumes -- the window's closing frame, a visual
+#              near-match for its own opening frame so the loop-back
+#              reads as another kickoff rather than a jump to a random
+#              moment.
+WINDOW_TICKS = 476
 
 FPS = 12  # independent of how the window was sampled -- see module docstring
 # 46 frames, evenly sampled across the whole WINDOW_TICKS span (not
-# consecutive ticks), played back at FPS above: 46/12 = ~3.83s, comfortably
-# inside the launcher's "roughly 1-3s" guidance's generous upper end and
-# well under MAX_PREVIEW_FRAMES=64.
+# consecutive ticks): 46/12 = ~3.83s, comfortably inside the launcher's
+# "roughly 1-3s" guidance's generous upper end and well under
+# MAX_PREVIEW_FRAMES=64.
 FRAME_COUNT = 46
 STRIDE_TICKS = WINDOW_TICKS / (FRAME_COUNT - 1)
 
