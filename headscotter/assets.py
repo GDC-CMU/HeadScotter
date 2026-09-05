@@ -40,6 +40,10 @@ SPRITE_SPECS: Dict[str, Tuple[str, Size]] = {
     "ball": ("sprites/ball.png", (36, 36)),
     "goal": ("sprites/goal.png", (90, 200)),
     "pitch_bg": ("sprites/pitch_bg.png", (800, 600)),
+    # The automated keepers -- one static pose each, team-colored to
+    # match the side they defend (see headscotter/keeper.py).
+    "keeper_left": ("sprites/keeper_left.png", (72, 72)),
+    "keeper_right": ("sprites/keeper_right.png", (72, 72)),
     # HUD glyph: a small ball icon used as the "-" divider between scores.
     "hud_ball_icon": ("sprites/hud_ball_icon.png", (32, 32)),
 }

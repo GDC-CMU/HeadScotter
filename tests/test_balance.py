@@ -3,15 +3,21 @@
 This is what caught, and now locks in the fix for, a very real bug: an
 earlier build's goal was so large (and nothing defended it) that a single
 simulated 90-second CPU-vs-CPU match finished 31-28 -- roughly a goal
-every 1.5 seconds. The fix (see headscotter/config.py: GOAL_MOUTH_HEIGHT,
-CPU_MAX_ADVANCE_FRACTION, BALL_RESTITUTION_HEAD, CPU_RESTING_SPEED_PX,
-CPU_STALEMATE_SECONDS) was grounded in real references (real football's
-goal-to-player-height ratio; how 2D "head soccer" clones without a
-keeper size their goal and position their defenders) and then driven the
-rest of the way by simulating full matches and measuring the result --
-not tuned by eye. This module re-runs that same measurement on every test
-run, so a change to any of those constants that lets scoring drift back
-into "meaningless scoreboard" territory fails loudly here instead of only
+every 1.5 seconds. A first fix shrank the goal itself, which fixed the
+score but broke the goal's *look* (barely half a player's height, reading
+as a small crate rather than a net). The final fix restores a
+visually-credible goal size and instead holds the score down with an
+actual goalkeeper (see headscotter/keeper.py and config.py:
+GOAL_MOUTH_HEIGHT, KEEPER_*, CPU_MAX_ADVANCE_FRACTION,
+BALL_RESTITUTION_HEAD, CPU_RESTING_SPEED_PX, CPU_STALEMATE_SECONDS) --
+grounded in real references (real football's goal-to-player-height
+ratio; how 2D "head soccer" clones size a credible-looking goal and
+position a keeper) and then driven the rest of the way by simulating
+full matches and measuring the result, not tuned by eye. This module
+re-runs that same measurement on every test run, so a change to any of
+those constants that lets scoring drift back into "meaningless
+scoreboard" territory (in *either* direction: unwatchable blowouts, or a
+keeper so good nobody can ever score) fails loudly here instead of only
 being noticed by someone watching a preview clip.
 
 Also confirms sudden death itself always terminates: with a much smaller
@@ -30,12 +36,12 @@ from headscotter.input import RawInput
 
 # Plausible per the client's brief: "somewhere around 3-10 goals total"
 # for a full match, i.e. comfortably single digits per side. Set with
-# generous headroom above the actually-observed simulated range (see the
-# module docstring and the constants' own comments in config.py: 150
-# simulated seeds gave totals of 3-8 and a max of 6 on either side) so
-# this doesn't flake on ordinary variance, while still catching a
-# regression back toward the old ~30-goals-a-side failure mode by a wide
-# margin.
+# generous headroom above the actually-observed simulated range (150
+# simulated seeds with the restored goal size and the keeper in place
+# gave totals of 2-7 and a max of 7 on either side -- see the constants'
+# own comments in config.py) so this doesn't flake on ordinary variance,
+# while still catching a regression back toward the old ~30-goals-a-side
+# failure mode by a wide margin.
 MAX_GOALS_PER_SIDE = 15
 MAX_TOTAL_GOALS = 25
 MIN_ACCEPTABLE_AVERAGE_TOTAL = 1.0

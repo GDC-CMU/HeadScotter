@@ -295,6 +295,47 @@ def make_hud_ball_icon(size):
     return make_ball(size)
 
 
+# --- Keepers -----------------------------------------------------------------------
+def make_keeper(size, body_color, outline_color, trim_color):
+    """A compact goalkeeper blob: a round body/head, a team-colored cap
+    band, two glove circles, and a simple face -- distinct from both
+    field-player silhouettes (no legs, no snout/antenna) since it never
+    runs or jumps, only glides vertically in the goal mouth."""
+    w, h = size
+    surf = _surface(size)
+    cx, cy = w / 2.0, h / 2.0
+    radius = min(w, h) / 2.0 - 6
+
+    pygame.draw.circle(surf, body_color, (round(cx), round(cy)), round(radius))
+    pygame.draw.circle(surf, outline_color, (round(cx), round(cy)), round(radius), 2)
+
+    cap_rect = pygame.Rect(0, 0, radius * 1.9, radius * 0.55)
+    cap_rect.center = (cx, cy - radius * 0.55)
+    pygame.draw.rect(surf, trim_color, cap_rect, border_radius=6)
+
+    glove_r = radius * 0.36
+    for side in (-1, 1):
+        gx = cx + side * radius * 0.98
+        gy = cy + radius * 0.1
+        pygame.draw.circle(surf, (250, 250, 250), (round(gx), round(gy)), round(glove_r))
+        pygame.draw.circle(surf, outline_color, (round(gx), round(gy)), round(glove_r), 1)
+
+    for dx in (-radius * 0.3, radius * 0.3):
+        ex, ey = cx + dx, cy - radius * 0.05
+        pygame.draw.circle(surf, (255, 255, 255), (round(ex), round(ey)), max(3, round(radius * 0.2)))
+        pygame.draw.circle(surf, (20, 20, 20), (round(ex), round(ey)), max(1, round(radius * 0.09)))
+
+    return surf
+
+
+def make_keeper_left(size):
+    return make_keeper(size, SCOTTY_BODY, SCOTTY_OUTLINE, SCOTTY_TRIM)
+
+
+def make_keeper_right(size):
+    return make_keeper(size, RIVAL_BODY, RIVAL_OUTLINE, RIVAL_TRIM)
+
+
 GENERATORS = {
     "scotty_run_1": lambda size: make_scotty(size, "run", leg_phase=1),
     "scotty_run_2": lambda size: make_scotty(size, "run", leg_phase=2),
@@ -307,6 +348,8 @@ GENERATORS = {
     "ball": make_ball,
     "goal": make_goal,
     "pitch_bg": make_pitch_bg,
+    "keeper_left": make_keeper_left,
+    "keeper_right": make_keeper_right,
     "hud_ball_icon": make_hud_ball_icon,
 }
 

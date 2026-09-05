@@ -58,6 +58,7 @@ def draw_frame(screen, game: Game) -> None:
     elif game.state in (GameState.MATCH, GameState.DEMO):
         _draw_pitch(screen)
         _draw_goals(screen)
+        _draw_keepers(screen, game)
         _draw_players(screen, game)
         _draw_ball(screen, game)
         _draw_hud(screen, game)
@@ -103,6 +104,16 @@ def _draw_goals(screen) -> None:
     right_rect = flipped.get_rect()
     right_rect.bottomleft = (config.PITCH_RIGHT, config.GROUND_Y)
     screen.blit(flipped, right_rect)
+
+
+def _draw_keepers(screen, game: Game) -> None:
+    left = assets.get("keeper_left")
+    rect = left.get_rect(center=(round(game.keeper_left.x), round(game.keeper_left.y)))
+    screen.blit(left, rect)
+
+    right = assets.get("keeper_right")
+    rect = right.get_rect(center=(round(game.keeper_right.x), round(game.keeper_right.y)))
+    screen.blit(right, rect)
 
 
 def _player_sprite(game: Game, player) -> "pygame.Surface":
@@ -182,10 +193,13 @@ def _draw_phase_banner(screen, game: Game) -> None:
 
 
 def _draw_demo_banner(screen) -> None:
-    _draw_text(screen, "DEMO", 24, HUD_DIM_COLOR, (config.SCREEN_WIDTH // 2, config.HUD_HEIGHT + 20))
+    # Positioned in the clear grass strip just below the pitch boundary
+    # line (config.PITCH_TOP) and well above the center circle/keepers,
+    # so neither line collides with a pitch marking or any gameplay art.
+    _draw_text(screen, "DEMO", 24, HUD_DIM_COLOR, (config.SCREEN_WIDTH // 2, config.PITCH_TOP + 30))
     _draw_text(
         screen, "PRESS START TO PLAY", 22, HUD_DIM_COLOR,
-        (config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT - 24),
+        (config.SCREEN_WIDTH // 2, config.PITCH_TOP + 62),
     )
 
 

@@ -51,31 +51,29 @@ PITCH_CENTER_X = (PITCH_LEFT + PITCH_RIGHT) / 2.0
 # GROUND_Y) is the open net; at or above it is the solid crossbar/post, which
 # just bounces the ball back into play like any other wall.
 #
-# Grounded in two independent, verifiable references, then driven the rest
-# of the way by headless simulation rather than picked by eye (originally
-# 170px/44% of the playfield, which -- combined with no goalkeeper -- meant
-# nearly any kick aimed at the opponent's half scored: a simulated 90s
-# CPU-vs-CPU match at that size finished 31-28):
+# A first balance pass shrank this to 60px (15% of the playfield) to fix a
+# simulated 90s CPU-vs-CPU match finishing 31-28 with no goalkeeper on
+# either end. That fixed the score, but broke the *look* of the goal: at
+# full size, with the goal barely half PLAYER_HEIGHT tall (Scotty could
+# not stand up in his own net) and an opening only ~1.8 ball-diameters
+# across, the goals read as small crates in the bottom corners rather
+# than goals, and scoring felt like squeezing through a slot rather than
+# beating a keeper. Restored to a size that reads as a real goal --
+# taller than a standing player, matching the two references below --
+# and the score is now held down by an actual keeper instead
+# (see KEEPER_* below and CPU_MAX_ADVANCE_FRACTION), which is what real
+# football and every 2D head-soccer clone with a credible-looking net
+# actually do:
 #  1. Real association football: a regulation goal is 2.44m tall; an average
 #     adult is roughly 1.75-1.83m, so a real goal is ~1.3-1.4x a player's
-#     standing height.
-#  2. 2D "head soccer"-style clones (which likewise have no separate
-#     keeper) commonly size the goal mouth at roughly 20-30% of the
-#     playfield's vertical extent, not ~44%.
-#  Both of those describe a match *with* a goalkeeper (real football) or
-#  at least some active defense (typical clones' still-present, if simple,
-#  keeper AI). This game deliberately has neither -- see
-#  CPU_MAX_ADVANCE_FRACTION -- so both reference ratios are a starting
-#  point, not the final answer: simulating full matches at each candidate
-#  size (see tests/test_balance.py) showed even the smaller of the two
-#  references (~30% of the playfield, ~117px) still produced scorelines
-#  in the high teens/twenties. 60px (~0.54x PLAYER_HEIGHT, ~15% of the
-#  playfield) was the smallest step that reliably produced single-digit-
-#  per-side scorelines across 150 simulated seeds with zero non-
-#  terminating matches, while GOAL_MOUTH_HEIGHT=50 introduced a match that
-#  never resolved at all -- see CPU_RESTING_SPEED_PX for why, and the
-#  balance tests for the numbers this is checked against.
-GOAL_MOUTH_HEIGHT = 60
+#     standing height. 170px is ~1.5x this game's PLAYER_HEIGHT (112px).
+#  2. 2D "head soccer"-style clones commonly size the goal mouth at
+#     roughly 20-30% of the playfield's vertical extent; 170px is ~44%,
+#     which is taller than that band, but deliberately so -- see the
+#     clone research note on KEEPER_RADIUS below on why "as tall as a
+#     real net" and "hard to score in" are handled by two different
+#     constants now, not one.
+GOAL_MOUTH_HEIGHT = 170
 CROSSBAR_Y = GROUND_Y - GOAL_MOUTH_HEIGHT
 
 # --- Player geometry ------------------------------------------------------------
@@ -171,25 +169,31 @@ CPU_JUMP_BALL_HEIGHT = 20.0
 # (so its lag applies to kicks too, not just movement).
 CPU_KICK_RANGE_X = KICK_RANGE_X
 CPU_KICK_RANGE_Y = KICK_RANGE_Y
-# There is no separate goalkeeper in this genre (nor in this game) -- each
-# field player defends by holding a defensive line instead of fully
-# committing forward, the standard simple single-defender pattern used in
-# 2D head-soccer clones. This caps how far a CPU will chase the ball away
-# from its own goal, as a fraction of the full pitch width, while the ball
-# is a live attacking threat (see CPU_RESTING_SPEED_PX for the exception).
-# Chosen empirically, not guessed: simulating dozens of full 90s CPU-vs-CPU
-# matches per candidate value found this was a knife-edge parameter -- too
-# low (below ~0.30) and both CPUs can't even reach the resting kickoff
-# ball (0-0 forever); too high (0.36+) and enough space opens up that
-# scorelines rocket into the double digits. A first pass landed on 0.39,
-# but a later fix to a bug in the CPU's own ballistic extrapolation (see
+# Even with a real goalkeeper now defending the mouth (see KEEPER_* below),
+# a field player who fully committed forward on every attack would still
+# leave their own goal undefended between the moment they lose the ball
+# and the moment they can run all the way back -- and, visually, both
+# players simply chasing the ball everywhere is what caused the "glued
+# together in the middle of the pitch" look. This caps how far a CPU will
+# chase the ball away from its own goal, as a fraction of the full pitch
+# width, while the ball is a live attacking threat (see
+# CPU_RESTING_SPEED_PX for the exception). Chosen empirically, not
+# guessed: simulating dozens of full 90s CPU-vs-CPU matches per candidate
+# value found this was a knife-edge parameter -- too low (below ~0.30)
+# and both CPUs can't even reach the resting kickoff ball (0-0 forever);
+# too high (0.36+) and enough space opens up that scorelines rocket into
+# the double digits. A first pass landed on 0.39, but a later fix to a
+# bug in the CPU's own ballistic extrapolation (see
 # CPUController._perceive()) made its ball-tracking meaningfully more
 # accurate, which shifted this whole knife-edge lower -- 0.39 alone was
 # no longer enough once combined with that fix and the lowered
 # BALL_RESTITUTION_HEAD below. 0.32 was the value found by re-simulating
 # 150 seeds at a generous tick budget that reliably keeps scorelines
 # single-digit-per-side with zero non-terminating matches -- see
-# tests/test_balance.py, which locks this in as a regression guard.
+# tests/test_balance.py, which locks this in as a regression guard. Kept
+# unchanged when the goalkeeper was added: re-simulating with the keeper
+# in place at this same value still held the target band, so there was
+# no reason to loosen the field players' own defensive discipline too.
 CPU_MAX_ADVANCE_FRACTION = 0.32
 # Below this perceived speed (px/sec) the ball is treated as having
 # stopped, not as a live attacking threat -- the defensive cap above is
@@ -214,6 +218,43 @@ CPU_RESTING_SPEED_PX = 50.0
 # death specifically) always eventually resolves, without weakening the
 # defensive positioning during ordinary, actively-contested play.
 CPU_STALEMATE_SECONDS = 20.0
+
+# --- Goalkeeper ----------------------------------------------------------------
+# Every goal has its own automated keeper, in every mode (1P/2P/DEMO) --
+# not human- or CPU-field-player-controlled, exactly like the fixed,
+# always-present single keeper in 2D head-soccer clones that keep a
+# visually credible, real-sized net (see GOAL_MOUTH_HEIGHT above) rather
+# than shrinking the goal until scoring is merely rare. A keeper is a
+# simple vertical "paddle": it does not run, jump, or leave its line's
+# small forward depth, it only tracks the ball's height within the goal
+# mouth -- see keeper.py. It must be beatable (a reaction delay, a speed
+# cap, and aim error all below), not a wall: re-simulating the same full
+# CPU-vs-CPU matches used to tune CPU_MAX_ADVANCE_FRACTION, with the
+# keeper added and GOAL_MOUTH_HEIGHT restored to 170, was how every value
+# below was actually chosen -- see tests/test_balance.py for the
+# resulting scorelines this locks in.
+KEEPER_RADIUS = 32.0
+# Fixed horizontal distance from its own goal line the keeper stands at
+# -- a "six-yard box" depth, not a movable range; the keeper never
+# advances further than this to challenge a ball, which is what keeps it
+# beatable by a shot placed past it rather than through it.
+KEEPER_DEPTH = 55.0
+# px/sec vertical speed cap while moving to cover a shot -- a fast,
+# well-placed shot can still beat a keeper that isn't already covering
+# that height, which is deliberate.
+KEEPER_SPEED = 300.0
+# Same perception-lag pattern as the CPU field players (see
+# CPU_REACTION_DELAY_SECONDS): the keeper only re-reads the ball's height
+# on a fixed tick rather than every frame.
+KEEPER_REACTION_DELAY_SECONDS = 0.15
+# Random vertical aim error re-rolled every perception tick, so the
+# keeper is never pixel-accurate even once it has "seen" the ball.
+KEEPER_AIM_ERROR_PX = 18.0
+# Bounce restitution for a ball the keeper touches (0 = dead stop/catch,
+# 1 = perfectly elastic parry) -- softer than a header, since a keeper
+# smothering a shot should look like a save, not another bounce that
+# keeps the rally dangerous.
+KEEPER_RESTITUTION = 0.4
 
 # --- Match rules -------------------------------------------------------------------
 MATCH_SECONDS = 90.0
