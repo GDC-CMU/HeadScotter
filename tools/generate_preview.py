@@ -15,6 +15,15 @@ captures a handful of frames through the real render path
 (``headscotter.render.draw_frame``), downsamples them to card size, and
 writes them plus ``manifest.json`` to ``assets/preview/``.
 
+The captured window is a **time-lapse**, not a straight recording: it
+spans ``WINDOW_TICKS`` of simulated gameplay (roughly three rallies --
+enough for the ball to travel to both goals, not just huddle around
+kickoff), but only ``FRAME_COUNT`` frames are actually sampled from it,
+evenly spaced through the whole window rather than consecutive ticks
+(see ``STRIDE_TICKS`` below). The output ``fps`` in the manifest is a
+separate, independent choice -- how fast the *card* plays the sampled
+highlights back -- not the rate anything was captured at.
+
 Deterministic by construction, so running this twice leaves ``git
 status`` clean:
 
@@ -30,14 +39,15 @@ status`` clean:
   the same fixed ``DT`` above -- so no synthetic-clock monkeypatch is
   needed here to keep animation state reproducible.
 * HeadScotter's only persisted state is the "most goals in a won 1P
-  match" record (``highscore.json``), and it is never displayed outside
-  the RESULT screen -- the captured scene here is a live MATCH/DEMO
-  frame (HUD score + clock only), which never reads that file. This
-  script still never touches match.load_high_score()/Game() defaults
-  that would, purely as a precaution: the frames captured below come
-  from a demo entered directly, and Game.__init__() reading the real
-  high score at construction time has no bearing on anything actually
-  drawn in these frames.
+  match" record (``highscore.json``). It is never read here (frames come
+  from a demo entered directly, and Game.__init__() reading that file at
+  construction time has no bearing on anything drawn) and never shown
+  outside the RESULT screen anyway -- the captured HUD is score + clock
+  only, both of which are entirely a function of the fixed seed and
+  fixed timestep above, never of anything persisted to disk. This is
+  the exact trap that broke PacDawg's first version of this tool (a
+  persisted high score baked into the HUD), so it's called out
+  explicitly here even though it can't actually occur in this game.
 """
 from __future__ import annotations
 
@@ -65,36 +75,34 @@ SEED = 20260115  # fixed: pins every CPUController aim-error roll the demo makes
 SIM_HZ = 60
 DT = 1.0 / SIM_HZ
 
-# Chosen by sampling the demo's first several rallies: KICKOFF ends and
-# PLAYING begins at simulated tick 72; the ball itself doesn't actually
-# start moving until tick 89 (both players spend ~17 ticks closing in
-# before the first kick), and the first goal ends live play at tick 154.
-# WARMUP_TICKS lands just after the ball is kicked -- not at dead-center
-# rest -- so the very first captured frame already shows real motion.
-WARMUP_TICKS = 90
-FPS = 8
-FRAME_PERIOD_SECONDS = 1.0 / FPS
-# 8 unique frames * 0.125s = 1.0s (60 ticks) of unique captured motion,
-# ending around tick 150 -- comfortably inside the live window (goal at
-# 154) with margin. The ping-pong sequence below doubles this to a
-# 14-frame, 1.75s loop -- within the "roughly 1-3 seconds" target --
-# without ever jump-cutting, since a goal/celebration freeze is never
-# captured.
-FRAME_COUNT = 8
+# Chosen by tracing this exact seed's demo (see the tests/dev session, not
+# reproduced here): the third rally's goal is scored at the LEFT end after
+# the first two are scored at the RIGHT end, so this window is the shortest
+# prefix of the demo that visits *both* halves of the pitch and *both*
+# goals, ending right as the ball resets to center for the next kickoff --
+# a visual near-match for the window's own opening frame, so the loop-back
+# reads as another kickoff rather than a jump to a random moment.
+#
+#   tick    0 : KICKOFF, ball at center (the window's opening frame)
+#   tick   72 : PLAYING begins (rally 1)
+#   tick  168 : GOAL -- ball crosses into the right goal (score 1-0)
+#   tick  361 : PLAYING begins (rally 2)
+#   tick  457 : GOAL -- right goal again (score 2-0)
+#   tick  650 : PLAYING begins (rally 3)
+#   tick  732 : GOAL -- LEFT goal this time (score 2-1) -- both goals now covered
+#   tick  853 : KICKOFF again, ball reset to center -- the window's closing frame
+WINDOW_TICKS = 853
+
+FPS = 12  # independent of how the window was sampled -- see module docstring
+# 46 frames, evenly sampled across the whole WINDOW_TICKS span (not
+# consecutive ticks), played back at FPS above: 46/12 = ~3.83s, comfortably
+# inside the launcher's "roughly 1-3s" guidance's generous upper end and
+# well under MAX_PREVIEW_FRAMES=64.
+FRAME_COUNT = 46
+STRIDE_TICKS = WINDOW_TICKS / (FRAME_COUNT - 1)
+
 OUT_WIDTH, OUT_HEIGHT = 200, 150
 OUT_DIR = REPO_ROOT / "assets" / "preview"
-
-
-def _ping_pong_sequence(names: list) -> list:
-    """Forward then reverse, excluding the two endpoints from the reverse
-    leg so they aren't held for a doubled frame: [0, 1, ..., N, N-1, ...,
-    1] then wraps back to 0. Every adjacent pair in this sequence --
-    including the wrap from the last entry back to the first -- is a
-    real, adjacent pair from the original continuous capture, so the
-    loop has no jump-cut anywhere."""
-    if len(names) < 2:
-        return list(names)
-    return list(names) + list(reversed(names[1:-1]))
 
 
 def _render_clean_frame(screen, game: Game) -> None:
@@ -117,10 +125,7 @@ def main() -> int:
 
     game = Game(rng=random.Random(SEED))
     game._enter_demo()
-
     idle = RawInput()
-    for _ in range(WARMUP_TICKS):
-        game.update(DT, idle)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     # Remove any stale frames from a previous run with a different
@@ -129,32 +134,29 @@ def main() -> int:
         existing.unlink()
 
     frame_names = []
-    elapsed_since_capture = 0.0
+    ticks_elapsed = 0.0
+    next_capture_at = 0.0
     while len(frame_names) < FRAME_COUNT:
-        # Capture the very first frame of the window immediately (before
-        # advancing), so the loop's first sample is exactly WARMUP_TICKS
-        # in, then advance by simulated ticks between subsequent captures.
-        if frame_names:
-            game.update(DT, idle)
-            elapsed_since_capture += DT
-            if elapsed_since_capture < FRAME_PERIOD_SECONDS - 1e-9:
-                continue
-            elapsed_since_capture -= FRAME_PERIOD_SECONDS
+        if ticks_elapsed >= next_capture_at - 1e-9:
+            _render_clean_frame(screen, game)
+            small = pygame.transform.scale(screen, (OUT_WIDTH, OUT_HEIGHT))
+            name = f"frame_{len(frame_names):03d}.png"
+            pygame.image.save(small, str(OUT_DIR / name))
+            frame_names.append(name)
+            next_capture_at += STRIDE_TICKS
+            if len(frame_names) >= FRAME_COUNT:
+                break
+        game.update(DT, idle)
+        ticks_elapsed += 1.0
 
-        _render_clean_frame(screen, game)
-        small = pygame.transform.scale(screen, (OUT_WIDTH, OUT_HEIGHT))
-        name = f"frame_{len(frame_names):03d}.png"
-        pygame.image.save(small, str(OUT_DIR / name))
-        frame_names.append(name)
-
-    manifest_frames = _ping_pong_sequence(frame_names)
-    manifest = {"version": 1, "fps": FPS, "frames": manifest_frames}
+    manifest = {"version": 1, "fps": FPS, "frames": frame_names}
     manifest_path = OUT_DIR / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     print(
-        f"wrote {len(frame_names)} unique frames ({OUT_WIDTH}x{OUT_HEIGHT} @ {FPS}fps), "
-        f"{len(manifest_frames)}-entry ping-pong sequence, to {OUT_DIR}"
+        f"wrote {len(frame_names)} frames ({OUT_WIDTH}x{OUT_HEIGHT} @ {FPS}fps) "
+        f"time-lapsed from {WINDOW_TICKS} simulated ticks ({WINDOW_TICKS / SIM_HZ:.1f}s), "
+        f"{len(frame_names) / FPS:.2f}s loop, to {OUT_DIR}"
     )
     return 0
 
