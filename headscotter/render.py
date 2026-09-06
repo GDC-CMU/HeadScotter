@@ -89,13 +89,24 @@ def _draw_stage(screen, game: Game) -> None:
     the previous build read as a top-down pitch."""
     screen.blit(assets.get("bg_stadium"), (0, 0))
 
+    # A real advertising hoarding runs along the back of the pitch and
+    # stops at the goals -- it never crosses a goal mouth. Clip the
+    # scrolling graphic to the span *between* the two goals
+    # (config.HOARDING_SPAN_LEFT/RIGHT); behind each goal, the plain
+    # wall-board colour already baked into bg_stadium.png shows through
+    # instead, so the hoarding never appears to run through the net.
     hoarding = assets.get("bg_hoarding")
     hoarding_w = hoarding.get_width()
     offset = int(game.anim_clock * config.HOARDING_SCROLL_SPEED) % hoarding_w
-    x = -offset
-    while x < config.SCREEN_WIDTH:
+    span_left = config.HOARDING_SPAN_LEFT
+    span_width = config.HOARDING_SPAN_RIGHT - config.HOARDING_SPAN_LEFT
+    previous_clip = screen.get_clip()
+    screen.set_clip(pygame.Rect(span_left, config.HOARDING_Y, span_width, config.HOARDING_HEIGHT))
+    x = span_left - offset
+    while x < config.HOARDING_SPAN_RIGHT:
         screen.blit(hoarding, (x, config.HOARDING_Y))
         x += hoarding_w
+    screen.set_clip(previous_clip)
 
     screen.blit(assets.get("ground"), (0, config.GROUND_SPRITE_Y))
 
@@ -224,10 +235,36 @@ def _draw_menu(screen, game: Game) -> None:
         label = f"> {item} <" if selected else item
         _draw_text(screen, label, 40 if selected else 34, color, (config.SCREEN_WIDTH // 2, top + index * spacing))
 
+    _draw_menu_rivals(screen)
+
     _draw_text(
         screen, "STICK: MOVE    A: SELECT / JUMP    X: KICK    P1: BACK", 20, HUD_DIM_COLOR,
         (config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT - 30),
     )
+
+
+_MENU_PORTRAIT_SCALE = 1.9
+
+
+def _draw_menu_rivals(screen) -> None:
+    """The two characters facing off at the foot of the menu -- head-
+    soccer menus almost always show the two rivals this way, and it
+    sells what the sprites actually look like immediately, rather than
+    only ever being seen small and in motion during a match."""
+    scotty = assets.get("scotty_idle")
+    rival = pygame.transform.flip(assets.get("rival_idle"), True, False)
+
+    scale = _MENU_PORTRAIT_SCALE
+    scotty_big = pygame.transform.scale(
+        scotty, (round(scotty.get_width() * scale), round(scotty.get_height() * scale))
+    )
+    rival_big = pygame.transform.scale(
+        rival, (round(rival.get_width() * scale), round(rival.get_height() * scale))
+    )
+
+    feet_y = config.SCREEN_HEIGHT - 105
+    screen.blit(scotty_big, scotty_big.get_rect(midbottom=(90, feet_y)))
+    screen.blit(rival_big, rival_big.get_rect(midbottom=(config.SCREEN_WIDTH - 90, feet_y)))
 
 
 def _draw_how_to_play(screen) -> None:

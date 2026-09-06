@@ -116,6 +116,13 @@ HOARDING_WIDTH = 560  # sourced (martinlhw's banner width, used verbatim)
 # continuously" but no implementation measures a speed. Chosen slow enough to
 # read as ambient background motion rather than a distraction.
 HOARDING_SCROLL_SPEED = 40.0  # px/sec
+# A real advertising hoarding runs along the back of the pitch and stops
+# at the goals -- it never crosses a goal mouth. render.py only draws the
+# *scrolling* hoarding graphic within this horizontal span, between where
+# the two goals end; behind each goal, the plain wall-board colour baked
+# into bg_stadium.png shows instead (see assets.py's bg_stadium entry).
+HOARDING_SPAN_LEFT = PITCH_LEFT + GOAL_WIDTH
+HOARDING_SPAN_RIGHT = PITCH_RIGHT - GOAL_WIDTH
 
 # --- Player geometry ------------------------------------------------------------
 # Head-soccer characters are drawn with a big head and a small body; against

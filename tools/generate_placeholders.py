@@ -36,22 +36,36 @@ pygame.font.init()
 
 TRANSPARENT = (0, 0, 0, 0)
 
-# --- Scotty: warm cream/tan coat with CMU-red trim ---------------------------------
-SCOTTY_BODY = (224, 196, 140)
-SCOTTY_SHADE = (188, 156, 100)
-SCOTTY_OUTLINE = (96, 72, 40)
-SCOTTY_TRIM = (196, 32, 48)
+# --- Scotty: a dark, shaggy Scottish terrier in a CMU-red kit ----------------------
+# A real Scottie's defining features -- a dark coat, erect pointed ears, a
+# prominent rectangular beard/muzzle, and bushy eyebrows -- are what make
+# this read as the breed rather than "a round head". Contrast against the
+# stadium backdrop and the rival comes from the kit (a bright red shirt),
+# not from the coat itself, matching the club's existing lesson that a
+# character drawn in a dark "natural" colour needs a bright element
+# somewhere to stay legible at cabinet viewing distance.
+SCOTTY_COAT = (52, 44, 38)
+SCOTTY_COAT_HI = (86, 74, 62)
+SCOTTY_BROW = (168, 148, 118)
+# Lighter than the coat itself, not darker -- a near-black outline on an
+# already near-black coat nearly vanishes against the stadium's own dark
+# crowd tiers. A warm mid-brown rim keeps the silhouette's edge defined
+# against both a dark backdrop and the coat it outlines.
+SCOTTY_OUTLINE = (94, 78, 62)
+SCOTTY_KIT = (196, 32, 48)
+SCOTTY_KIT_TRIM = (245, 245, 245)
 
-# --- Rival: cool blue-grey, a completely different silhouette -----------------------
-# Trim is a crisp near-white rather than a third hue -- pairs with the
-# blue body as a "blue kit" the same way Scotty's red trim pairs with
-# his cream coat as a "red kit", so the match reads as the genre's
-# standard red-vs-blue color-plus-mirroring opposition (see the genre
-# research report, section 3d) rather than three competing colors.
-RIVAL_BODY = (150, 190, 235)
-RIVAL_SHADE = (108, 146, 196)
-RIVAL_OUTLINE = (40, 58, 92)
-RIVAL_TRIM = (240, 246, 252)
+# --- Rival: an angular, two-eyed creature in a navy kit -- not a palette swap ------
+# The previous pass recoloured the exact same "circle head + floppy ear +
+# single visor" shape Scotty uses, which is indistinguishable in
+# silhouette. This rival's head is a hard-edged hexagonal shape with a
+# pointed chin and a single jagged dorsal crest instead of two ears, so
+# the two read as different creatures even with colour removed.
+RIVAL_HIDE = (150, 190, 235)
+RIVAL_HIDE_SHADE = (108, 146, 196)
+RIVAL_OUTLINE = (30, 44, 74)
+RIVAL_KIT = (44, 78, 156)
+RIVAL_KIT_TRIM = (240, 246, 252)
 
 # --- Stadium palette -----------------------------------------------------------------
 SKY_TOP = (94, 168, 224)
@@ -67,6 +81,11 @@ CROWD_COLORS = [
 GRASS_LIGHT = (58, 150, 76)
 GOAL_POST = (238, 238, 238)
 GOAL_OUTLINE = (55, 60, 65)
+# Perimeter wall board behind the goals, where the scrolling hoarding
+# graphic is never drawn (see make_bg_stadium / the hoarding-span note in
+# render.py) -- a plain dark board colour, matching the hoarding's own
+# frame colour so the two read as one continuous wall.
+WALL_BOARD_COLOR = (18, 18, 20)
 
 
 def _surface(size):
@@ -79,100 +98,184 @@ def _lerp_color(c0, c1, t):
     return tuple(round(a + (b - a) * t) for a, b in zip(c0, c1))
 
 
+def _boot(surf, x, y, outline_color):
+    """A small dark boot with a light sole line -- deliberately simple
+    (no rotation to match a leg's exact angle) but enough to read as
+    footwear rather than a bare stick leg."""
+    rect = pygame.Rect(0, 0, 11, 6)
+    rect.center = (round(x), round(y))
+    pygame.draw.ellipse(surf, (24, 22, 22), rect)
+    pygame.draw.ellipse(surf, outline_color, rect, 1)
+    pygame.draw.line(surf, (235, 235, 235), (rect.left + 2, rect.bottom - 1), (rect.right - 2, rect.bottom - 1), 1)
+
+
+def _draw_kit(
+    surf, cx, head_bottom, feet_y, radius, pose, leg_phase,
+    kit_color, kit_trim, outline_color, shorts_stripe,
+):
+    """The torso: a shirt, shorts, legs, and boots, shared between both
+    characters (only the colours differ). Occupies the full
+    HEAD_OFFSET_Y - HEAD_RADIUS gap below the head -- by construction
+    exactly matches the vertical room the config geometry leaves for a
+    body, so this is a real torso, not a ring or a sliver.
+    """
+    shirt_overlap = 5   # tucked up under the chin for a seamless neck join
+    shirt_h = 9
+    shorts_h = 6
+    shirt_top = head_bottom - shirt_overlap
+    shirt_bottom = head_bottom + shirt_h
+    shorts_bottom = shirt_bottom + shorts_h
+    legs_top = shorts_bottom
+    boot_y = feet_y - 2
+
+    hip = radius * 0.30
+    leg_w = 6
+
+    def _leg(hx, bx, by):
+        pygame.draw.line(surf, outline_color, (cx + hx, legs_top), (bx, by), leg_w)
+        _boot(surf, bx, by, outline_color)
+
+    if pose == "kick":
+        _leg(-hip, cx - hip - 3, boot_y)
+        _leg(hip, cx + radius * 1.05, shirt_top + radius * 0.25)
+    elif pose == "jump":
+        _leg(-hip, cx - hip - 7, boot_y - 3)
+        _leg(hip, cx + hip + 7, boot_y - 3)
+    elif pose == "idle":
+        _leg(-hip, cx - hip, boot_y)
+        _leg(hip, cx + hip, boot_y)
+    else:  # run
+        offset = 6 if leg_phase == 1 else -6
+        _leg(-hip, cx - hip + offset, boot_y)
+        _leg(hip, cx + hip - offset, boot_y)
+
+    # Shorts -- narrower than the shirt, a distinct band so it reads as
+    # a separate garment rather than a continuation of the shirt.
+    shorts_rect = pygame.Rect(0, 0, radius * 1.25, shorts_h + 3)
+    shorts_rect.midtop = (cx, shirt_bottom - 3)
+    pygame.draw.rect(surf, (240, 240, 240), shorts_rect, border_radius=2)
+    pygame.draw.rect(surf, outline_color, shorts_rect, 1, border_radius=2)
+    pygame.draw.rect(
+        surf, shorts_stripe,
+        (shorts_rect.centerx - 2, shorts_rect.top + 1, 4, shorts_rect.height - 2),
+    )
+
+    # Shirt -- a tapered trapezoid (broader at the shoulders, narrower at
+    # the waist), the actual silhouette of a jersey -- drawn last so it
+    # overlaps the top of the shorts and the base of the head for a
+    # seamless figure. Deliberately *not* a rounded pill/rect: an earlier
+    # pass here read as a life-preserver ring rather than a shirt.
+    shoulder_w = radius * 1.6
+    waist_w = radius * 1.15
+    shirt_points = [
+        (cx - shoulder_w / 2, shirt_top),
+        (cx + shoulder_w / 2, shirt_top),
+        (cx + waist_w / 2, shirt_bottom),
+        (cx - waist_w / 2, shirt_bottom),
+    ]
+    pygame.draw.polygon(surf, kit_color, shirt_points)
+    pygame.draw.polygon(surf, outline_color, shirt_points, 1)
+    # Flat short-sleeve cuffs at the shoulders -- small rectangular tabs,
+    # not round stubs, so the silhouette reads as fabric, not a ring.
+    for side in (-1, 1):
+        sleeve = pygame.Rect(0, 0, 6, 6)
+        sleeve.midtop = (cx + side * shoulder_w / 2, shirt_top + 1)
+        pygame.draw.rect(surf, kit_color, sleeve)
+        pygame.draw.rect(surf, outline_color, sleeve, 1)
+    pygame.draw.polygon(
+        surf, kit_trim,
+        [(cx - 4, shirt_top + 1), (cx + 4, shirt_top + 1), (cx, shirt_top + 6)],
+    )
+
+
 # --- Scotty ------------------------------------------------------------------------
 def _scotty_head(surf, cx, head_cy, radius, mouth_open):
-    for angle in (150, 175, 200, 225):
-        bx = cx + radius * 0.85 * math.cos(math.radians(angle))
-        by = head_cy + radius * 0.85 * math.sin(math.radians(angle))
-        pygame.draw.circle(surf, SCOTTY_SHADE, (round(bx), round(by)), max(2, round(radius * 0.22)))
+    # Shaggy fur bumps around the back/top of the head.
+    for angle in (150, 172, 196, 220):
+        bx = cx + radius * 0.88 * math.cos(math.radians(angle))
+        by = head_cy + radius * 0.88 * math.sin(math.radians(angle))
+        pygame.draw.circle(surf, SCOTTY_COAT_HI, (round(bx), round(by)), max(2, round(radius * 0.2)))
 
-    pygame.draw.circle(surf, SCOTTY_BODY, (round(cx), round(head_cy)), round(radius))
+    pygame.draw.circle(surf, SCOTTY_COAT, (round(cx), round(head_cy)), round(radius))
     pygame.draw.circle(surf, SCOTTY_OUTLINE, (round(cx), round(head_cy)), round(radius), 2)
 
+    # Two erect, pointed ears on top -- the single most recognisable
+    # Scottie silhouette feature -- not a floppy triangle stuck on the side.
     for side in (-1, 1):
-        ex = cx + side * radius * 0.55
-        ey = head_cy - radius * 0.65
+        base_x = cx + side * radius * 0.42
+        base_y = head_cy - radius * 0.78
+        tip_x = cx + side * radius * 0.62
+        tip_y = head_cy - radius * 1.45
         pygame.draw.polygon(
-            surf, SCOTTY_SHADE,
-            [(ex - radius * 0.22, ey), (ex + radius * 0.22 * side, ey - radius * 0.05),
-             (ex + radius * 0.05 * side, ey + radius * 0.55)],
+            surf, SCOTTY_COAT,
+            [(base_x - side * radius * 0.16, base_y), (tip_x, tip_y), (base_x + side * radius * 0.20, base_y + radius * 0.1)],
         )
         pygame.draw.polygon(
             surf, SCOTTY_OUTLINE,
-            [(ex - radius * 0.22, ey), (ex + radius * 0.22 * side, ey - radius * 0.05),
-             (ex + radius * 0.05 * side, ey + radius * 0.55)],
+            [(base_x - side * radius * 0.16, base_y), (tip_x, tip_y), (base_x + side * radius * 0.20, base_y + radius * 0.1)],
             1,
         )
 
-    snout_cx = cx + radius * 0.92
-    snout_cy = head_cy + radius * 0.18
-    snout_rect = pygame.Rect(0, 0, radius * 0.95, radius * 0.7)
-    snout_rect.center = (snout_cx, snout_cy)
-    pygame.draw.ellipse(surf, SCOTTY_SHADE, snout_rect)
-    pygame.draw.ellipse(surf, SCOTTY_OUTLINE, snout_rect, 1)
+    # Rectangular beard/muzzle -- a hard-edged block, not an ellipse --
+    # jutting forward, the second defining Scottie feature.
+    beard_w, beard_h = radius * 1.05, radius * 0.62
+    beard_rect = pygame.Rect(0, 0, beard_w, beard_h)
+    beard_rect.midleft = (cx + radius * 0.35, head_cy + radius * 0.32)
+    pygame.draw.rect(surf, SCOTTY_COAT, beard_rect, border_radius=2)
+    pygame.draw.rect(surf, SCOTTY_OUTLINE, beard_rect, 1, border_radius=2)
+    # A lighter chin-tip and a couple of whisker dashes for texture.
+    pygame.draw.rect(
+        surf, SCOTTY_COAT_HI,
+        (beard_rect.right - radius * 0.22, beard_rect.top + 2, radius * 0.2, beard_rect.height - 4),
+    )
+    for i in range(2):
+        wy = beard_rect.top + 4 + i * 6
+        pygame.draw.line(surf, SCOTTY_OUTLINE, (beard_rect.left + 3, wy), (beard_rect.left + beard_w * 0.55, wy), 1)
 
-    nose_x = snout_cx + radius * 0.42
-    pygame.draw.circle(surf, SCOTTY_OUTLINE, (round(nose_x), round(snout_cy)), max(2, round(radius * 0.12)))
+    nose_x = beard_rect.right - radius * 0.08
+    nose_y = beard_rect.centery - radius * 0.1
+    pygame.draw.circle(surf, (18, 14, 12), (round(nose_x), round(nose_y)), max(2, round(radius * 0.13)))
 
     if mouth_open:
         pygame.draw.arc(
             surf, SCOTTY_OUTLINE,
-            (snout_cx - radius * 0.3, snout_cy, radius * 0.6, radius * 0.4),
+            (beard_rect.left + radius * 0.15, beard_rect.centery, beard_rect.width * 0.5, beard_rect.height * 0.5),
             3.4, 6.0, 2,
         )
 
-    eye_x = cx + radius * 0.18
-    eye_y = head_cy - radius * 0.28
-    pygame.draw.circle(surf, (255, 250, 240), (round(eye_x), round(eye_y)), max(3, round(radius * 0.22)))
-    pygame.draw.circle(surf, (25, 20, 15), (round(eye_x), round(eye_y)), max(1, round(radius * 0.1)))
+    # Bushy eyebrow -- a thick tuft above the eye, the third defining
+    # Scottie feature, then the eye itself underneath it.
+    eye_x = cx + radius * 0.30
+    eye_y = head_cy - radius * 0.05
+    for dx in (-3, 0, 3):
+        pygame.draw.line(
+            surf, SCOTTY_BROW,
+            (eye_x - radius * 0.32 + dx, eye_y - radius * 0.42),
+            (eye_x + radius * 0.10 + dx, eye_y - radius * 0.30), 2,
+        )
+    pygame.draw.circle(surf, (250, 246, 238), (round(eye_x), round(eye_y)), max(3, round(radius * 0.2)))
+    pygame.draw.circle(surf, (22, 18, 14), (round(eye_x), round(eye_y)), max(1, round(radius * 0.09)))
 
 
 def make_scotty(size, pose, leg_phase=0):
     w, h = size
     surf = _surface(size)
     cx = w / 2.0
-    feet_y = h - 3
+    feet_y = h - 2
     radius = config.HEAD_RADIUS
-    head_cy = h - config.HEAD_OFFSET_Y
+    head_cy = feet_y - config.HEAD_OFFSET_Y
+    head_bottom = head_cy + radius
 
-    # The body only has a sliver of vertical room below the head at this
-    # scale (by design -- the genre's "big head, tiny body" silhouette),
-    # so it is drawn wide and starts right at the head's own edge (a
-    # small deliberate overlap for a seamless neck join) rather than
-    # trying to squeeze a separate neck gap in.
-    body_top = head_cy + radius * 0.68
-    body_h = max(10, feet_y - body_top - 8)
-
-    if pose == "kick":
-        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx - 6, body_top + body_h * 0.7), (cx - 13, feet_y), 9)
-        pygame.draw.line(
-            surf, SCOTTY_OUTLINE, (cx + 4, body_top + body_h * 0.55),
-            (cx + radius * 1.15, head_cy + radius * 0.35), 9,
-        )
-    elif pose == "jump":
-        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx - 9, body_top + body_h * 0.5), (cx - 15, feet_y - 8), 9)
-        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx + 9, body_top + body_h * 0.5), (cx + 15, feet_y - 8), 9)
-    elif pose == "idle":
-        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx - 6, body_top + body_h * 0.4), (cx - 6, feet_y), 9)
-        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx + 6, body_top + body_h * 0.4), (cx + 6, feet_y), 9)
-    else:  # run
-        offset = 12 if leg_phase == 1 else -12
-        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx - 6, body_top + body_h * 0.4), (cx - 6 + offset, feet_y), 9)
-        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx + 6, body_top + body_h * 0.4), (cx + 6 - offset, feet_y), 9)
-
-    body_rect = pygame.Rect(0, 0, radius * 1.7, body_h)
-    body_rect.midtop = (cx, body_top)
-    pygame.draw.ellipse(surf, SCOTTY_BODY, body_rect)
-    pygame.draw.ellipse(surf, SCOTTY_OUTLINE, body_rect, 2)
-    pygame.draw.rect(
-        surf, SCOTTY_TRIM,
-        (body_rect.left + 3, body_rect.top + body_rect.height * 0.35, body_rect.width - 6, 6),
+    _draw_kit(
+        surf, cx, head_bottom, feet_y, radius, pose, leg_phase,
+        kit_color=SCOTTY_KIT, kit_trim=SCOTTY_KIT_TRIM, outline_color=SCOTTY_OUTLINE,
+        shorts_stripe=SCOTTY_KIT,
     )
 
-    tail_wag = 1.35 if pose == "idle" else 1.2
+    # Tail, drawn behind the head so it doesn't compete with the beard.
     pygame.draw.line(
-        surf, SCOTTY_OUTLINE, (cx - radius * 0.9, head_cy + radius * 0.6),
-        (cx - radius * tail_wag, head_cy + radius * 0.15), 5,
+        surf, SCOTTY_OUTLINE, (cx - radius * 0.95, head_cy + radius * 0.55),
+        (cx - radius * 1.4, head_cy + radius * 0.1), 5,
     )
 
     _scotty_head(surf, cx, head_cy, radius, mouth_open=(pose == "kick"))
@@ -181,60 +284,67 @@ def make_scotty(size, pose, leg_phase=0):
 
 # --- Rival -----------------------------------------------------------------------
 def _rival_head(surf, cx, head_cy, radius):
-    pygame.draw.circle(surf, RIVAL_BODY, (round(cx), round(head_cy)), round(radius))
-    pygame.draw.circle(surf, RIVAL_OUTLINE, (round(cx), round(head_cy)), round(radius), 2)
-
-    for side in (-1, 1):
-        bx = cx + side * radius * 0.5
-        by = head_cy - radius * 0.85
-        pygame.draw.line(surf, RIVAL_OUTLINE, (bx, by), (bx, by - radius * 0.5), 3)
-        pygame.draw.circle(surf, RIVAL_TRIM, (round(bx), round(by - radius * 0.5)), max(3, round(radius * 0.16)))
-
-    visor_rect = pygame.Rect(0, 0, radius * 1.3, radius * 0.55)
-    visor_rect.center = (cx + radius * 0.15, head_cy)
-    pygame.draw.ellipse(surf, (20, 24, 30), visor_rect)
-    pygame.draw.ellipse(surf, RIVAL_TRIM, visor_rect, 2)
-    pygame.draw.ellipse(
-        surf, (140, 220, 255),
-        (visor_rect.right - radius * 0.5, visor_rect.centery - radius * 0.12, radius * 0.35, radius * 0.24),
+    """A hard-edged, angular shape with a pointed chin, a single jagged
+    dorsal crest instead of two ears, and two round eyes -- deliberately
+    not a recoloured circle, so the two characters are distinguishable
+    by silhouette alone (see the module's solid-black self-test note in
+    main())."""
+    # Hexagonal "shield" head: flat top, angled shoulders, a pointed chin.
+    points = [
+        (cx - radius * 0.62, head_cy - radius * 0.75),
+        (cx + radius * 0.62, head_cy - radius * 0.75),
+        (cx + radius * 0.98, head_cy - radius * 0.05),
+        (cx + radius * 0.55, head_cy + radius * 0.75),
+        (cx, head_cy + radius * 1.05),
+        (cx - radius * 0.55, head_cy + radius * 0.75),
+        (cx - radius * 0.98, head_cy - radius * 0.05),
+    ]
+    pygame.draw.polygon(surf, RIVAL_HIDE, points)
+    pygame.draw.polygon(surf, RIVAL_OUTLINE, points, 2)
+    # A darker angular cheek shade for a touch of depth.
+    pygame.draw.polygon(
+        surf, RIVAL_HIDE_SHADE,
+        [
+            (cx + radius * 0.98, head_cy - radius * 0.05), (cx + radius * 0.55, head_cy + radius * 0.75),
+            (cx + radius * 0.15, head_cy + radius * 0.55), (cx + radius * 0.55, head_cy - radius * 0.05),
+        ],
     )
+
+    # A single jagged dorsal crest on top -- not two ears -- the clearest
+    # single silhouette difference from Scotty's paired erect ears.
+    crest_base_y = head_cy - radius * 0.75
+    crest = [
+        (cx - radius * 0.4, crest_base_y), (cx - radius * 0.18, crest_base_y - radius * 0.55),
+        (cx + radius * 0.02, crest_base_y - radius * 0.15), (cx + radius * 0.22, crest_base_y - radius * 0.7),
+        (cx + radius * 0.4, crest_base_y),
+    ]
+    pygame.draw.polygon(surf, RIVAL_HIDE, crest)
+    pygame.draw.polygon(surf, RIVAL_OUTLINE, crest, 1)
+    pygame.draw.line(surf, RIVAL_KIT_TRIM, crest[1], crest[3], 2)
+
+    # Two round eyes, not one huge visor.
+    for side, scale in ((-1, 0.85), (1, 1.0)):
+        ex = cx + radius * 0.28 + side * radius * 0.30
+        ey = head_cy - radius * 0.12
+        r = radius * 0.22 * scale
+        pygame.draw.circle(surf, (24, 28, 34), (round(ex), round(ey)), round(r))
+        pygame.draw.circle(surf, RIVAL_KIT_TRIM, (round(ex), round(ey)), round(r), 1)
+        pygame.draw.circle(surf, (150, 220, 255), (round(ex + r * 0.3), round(ey - r * 0.3)), max(1, round(r * 0.35)))
 
 
 def make_rival(size, pose, leg_phase=0):
     w, h = size
     surf = _surface(size)
     cx = w / 2.0
-    feet_y = h - 3
+    feet_y = h - 2
     radius = config.HEAD_RADIUS
-    head_cy = h - config.HEAD_OFFSET_Y
+    head_cy = feet_y - config.HEAD_OFFSET_Y
+    head_bottom = head_cy + radius * 0.95  # the head's own chin point is slightly higher than a circle's
 
-    body_top = head_cy + radius * 0.68
-    body_h = max(10, feet_y - body_top - 8)
-
-    if pose == "kick":
-        pygame.draw.line(surf, RIVAL_OUTLINE, (cx - 6, body_top + body_h * 0.7), (cx - 13, feet_y), 9)
-        pygame.draw.line(
-            surf, RIVAL_OUTLINE, (cx + 4, body_top + body_h * 0.55),
-            (cx + radius * 1.15, head_cy + radius * 0.35), 9,
-        )
-    elif pose == "jump":
-        pygame.draw.line(surf, RIVAL_OUTLINE, (cx - 9, body_top + body_h * 0.5), (cx - 15, feet_y - 8), 9)
-        pygame.draw.line(surf, RIVAL_OUTLINE, (cx + 9, body_top + body_h * 0.5), (cx + 15, feet_y - 8), 9)
-    elif pose == "idle":
-        pygame.draw.line(surf, RIVAL_OUTLINE, (cx - 6, body_top + body_h * 0.4), (cx - 6, feet_y), 9)
-        pygame.draw.line(surf, RIVAL_OUTLINE, (cx + 6, body_top + body_h * 0.4), (cx + 6, feet_y), 9)
-    else:
-        offset = 12 if leg_phase == 1 else -12
-        pygame.draw.line(surf, RIVAL_OUTLINE, (cx - 6, body_top + body_h * 0.4), (cx - 6 + offset, feet_y), 9)
-        pygame.draw.line(surf, RIVAL_OUTLINE, (cx + 6, body_top + body_h * 0.4), (cx + 6 - offset, feet_y), 9)
-
-    body_rect = pygame.Rect(0, 0, radius * 1.6, body_h)
-    body_rect.midtop = (cx, body_top)
-    pygame.draw.rect(surf, RIVAL_BODY, body_rect, border_radius=5)
-    pygame.draw.rect(surf, RIVAL_OUTLINE, body_rect, 2, border_radius=5)
-    pygame.draw.rect(
-        surf, RIVAL_TRIM,
-        (body_rect.left + 3, body_rect.top + body_rect.height * 0.35, body_rect.width - 6, 6),
+    _draw_kit(
+        surf, cx, head_bottom, feet_y, radius, pose, leg_phase,
+        kit_color=RIVAL_KIT, kit_trim=RIVAL_KIT_TRIM, outline_color=RIVAL_OUTLINE,
+        shorts_stripe=RIVAL_KIT,
     )
 
     _rival_head(surf, cx, head_cy, radius)
@@ -328,24 +438,34 @@ def make_bg_stadium(size):
     silhouette reads better at this resolution than a maximally busy
     one -- so this leans toward "readable texture", not "as many dots
     as will fit".
+
+    The canvas is taller than the stands themselves: below the stands
+    proper (config.HOARDING_Y) is a plain, solid perimeter wall-board
+    strip down to where the ground sprite begins (config.GROUND_SPRITE_Y).
+    render.py only ever draws the *scrolling* hoarding graphic in the
+    span between the two goals (see its hoarding-span note) -- behind
+    each goal, this plain wall-board colour shows instead, so the
+    scrolling advertising never appears to run *through* a goal mouth.
     """
     w, h = size
+    stadium_h = config.HOARDING_Y  # the stands/sky proper; the rest is wall board
     surf = pygame.Surface(size)
+    surf.fill(WALL_BOARD_COLOR)
 
-    horizon = round(h * 0.55)
+    horizon = round(stadium_h * 0.55)
     for y in range(horizon):
         t = y / max(1, horizon - 1)
         surf.fill(_lerp_color(SKY_TOP, SKY_HORIZON, t), (0, y, w, 1))
 
-    stand_top = round(h * 0.20)
-    tier_h = (h - stand_top) // 3
+    stand_top = round(stadium_h * 0.20)
+    tier_h = (stadium_h - stand_top) // 3
     tiers = [
         (stand_top, STAND_FAR),
         (stand_top + tier_h, STAND_MID),
         (stand_top + tier_h * 2, STAND_NEAR),
     ]
     for tier_y, color in tiers:
-        pygame.draw.rect(surf, color, (0, tier_y, w, h - tier_y))
+        pygame.draw.rect(surf, color, (0, tier_y, w, stadium_h - tier_y))
     # A thin lighter seam at the top edge of each tier -- reads as the
     # parapet/step between tiers without drawing an actual 3D ledge.
     for tier_y, color in tiers:

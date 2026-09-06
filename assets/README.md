@@ -51,10 +51,13 @@ at cabinet viewing distance, at all times:
   outline) that they read clearly against the stadium/grass backdrop and
   against each other.
 - Keep the two characters' **silhouettes** distinct, not just their
-  colors -- Scotty has floppy ears and a snout; the rival has antenna and
-  a visor and no ears at all. If you redraw either one, preserve (or
-  exaggerate) that silhouette difference so a colorblind visitor, or
-  just a fast glance, can still tell them apart instantly.
+  colors -- Scotty is round-headed with two erect pointed ears and a
+  rectangular beard; the rival is hard-edged/hexagonal with a single
+  jagged crest and no ears at all. If you redraw either one, preserve
+  (or exaggerate) that silhouette difference -- fill both solid black
+  and confirm they're still distinguishable by shape alone -- so a
+  colorblind visitor, or just a fast glance, can still tell them apart
+  instantly.
 - The ball must never blend into the grass or either character -- keep
   it light, with a visible dark pattern.
 
@@ -68,31 +71,45 @@ pixel is drawn at the character's feet position, which always sits on
 that same place so it still lines up with where the ball actually
 bounces off it. The head is deliberately the dominant part of the
 silhouette (~0.75 of total character height, per the genre's "big head"
-convention) -- the body below it is small, almost a stub, on purpose.
-All five poses per character share one canvas size; art only facing
-**right** is needed, since `headscotter/render.py` mirrors the sprite in
-code when a character faces left.
+convention), but there is a real, visible torso below it -- a shirt,
+shorts, legs, and boots -- occupying the `HEAD_OFFSET_Y - HEAD_RADIUS`
+gap the geometry leaves below the head (21px): "big head" means the
+head dominates, not that the body is a ring or a sliver. All five poses
+per character share one canvas size; art only facing **right** is
+needed, since `headscotter/render.py` mirrors the sprite in code when a
+character faces left.
 
 | Files | Size | Used for |
 |---|---|---|
-| `scotty_idle.png` | 72x90 | Scotty (P1 / 1P human), standing still |
-| `scotty_run_1.png`, `scotty_run_2.png` | 72x90 | Scotty running -- two-frame leg cycle |
-| `scotty_jump.png` | 72x90 | Scotty airborne (jumping or falling) |
-| `scotty_kick.png` | 72x90 | Scotty, briefly, right after a kick connects |
-| `rival_idle.png` | 72x90 | The rival (CPU / P2), standing still |
-| `rival_run_1.png`, `rival_run_2.png` | 72x90 | The rival running |
-| `rival_jump.png` | 72x90 | The rival airborne |
-| `rival_kick.png` | 72x90 | The rival, briefly, right after a kick connects |
+| `scotty_idle.png` | 78x96 | Scotty (P1 / 1P human), standing still |
+| `scotty_run_1.png`, `scotty_run_2.png` | 78x96 | Scotty running -- two-frame leg cycle |
+| `scotty_jump.png` | 78x96 | Scotty airborne (jumping or falling) |
+| `scotty_kick.png` | 78x96 | Scotty, briefly, right after a kick connects |
+| `rival_idle.png` | 78x96 | The rival (CPU / P2), standing still |
+| `rival_run_1.png`, `rival_run_2.png` | 78x96 | The rival running |
+| `rival_jump.png` | 78x96 | The rival airborne |
+| `rival_kick.png` | 78x96 | The rival, briefly, right after a kick connects |
 
-**Scotty** is CMU's mascot, a Scottish Terrier, drawn big-headed
-head-soccer style: floppy pointed ears, a snout, a shaggy fur texture,
-and a CMU-red collar stripe, on a warm cream/tan coat for contrast.
+**Scotty** is CMU's mascot, a Scottish Terrier, and is drawn to actually
+read as one: a dark, shaggy coat, two erect pointed ears (not floppy),
+a prominent rectangular beard/muzzle (a hard-edged block, not an
+ellipse), and a bushy eyebrow tuft over the eye. Contrast against the
+stadium and against the rival comes from the kit -- a bright CMU-red
+shirt with white shorts -- not from the coat itself, the same
+"dark coat needs a bright element somewhere" lesson as the club's other
+games. Wears a real football kit: shirt, shorts, and boots, not just a
+head.
 
 **The rival** is a deliberately original, distinct opponent -- not a
-copy of any commercial game's character -- with a completely different
-silhouette from Scotty: antenna instead of ears, one wide visor instead
-of a snout, and a rectangular jersey body instead of a rounded one, in
-cool blue-grey with orange trim.
+copy of any commercial game's character, and not a recolour of Scotty's
+shape. Its head is a hard-edged hexagonal "shield" with a pointed chin,
+a single jagged dorsal crest instead of two ears, and two round eyes
+(never a single visor covering half the face) -- a genuinely different
+silhouette, not just a different colour. Wears a navy-and-white kit,
+pairing with Scotty's red-and-cream as the genre's standard red-vs-blue
+colour opposition. **Test any redraw of either character by filling it
+solid black and comparing silhouettes side by side** -- if you cannot
+tell which is which with colour removed, the shape hasn't changed enough.
 
 ## Ball
 

@@ -29,17 +29,17 @@ Size = Tuple[int, int]
 # name -> (relative path under assets/, nominal pixel size)
 SPRITE_SPECS: Dict[str, Tuple[str, Size]] = {
     # Scotty -- the human/P1 character, CMU's mascot Scottish Terrier.
-    "scotty_idle": ("sprites/scotty_idle.png", (72, 90)),
-    "scotty_run_1": ("sprites/scotty_run_1.png", (72, 90)),
-    "scotty_run_2": ("sprites/scotty_run_2.png", (72, 90)),
-    "scotty_jump": ("sprites/scotty_jump.png", (72, 90)),
-    "scotty_kick": ("sprites/scotty_kick.png", (72, 90)),
+    "scotty_idle": ("sprites/scotty_idle.png", (78, 96)),
+    "scotty_run_1": ("sprites/scotty_run_1.png", (78, 96)),
+    "scotty_run_2": ("sprites/scotty_run_2.png", (78, 96)),
+    "scotty_jump": ("sprites/scotty_jump.png", (78, 96)),
+    "scotty_kick": ("sprites/scotty_kick.png", (78, 96)),
     # Rival -- the CPU/P2 character, a distinct silhouette and color.
-    "rival_idle": ("sprites/rival_idle.png", (72, 90)),
-    "rival_run_1": ("sprites/rival_run_1.png", (72, 90)),
-    "rival_run_2": ("sprites/rival_run_2.png", (72, 90)),
-    "rival_jump": ("sprites/rival_jump.png", (72, 90)),
-    "rival_kick": ("sprites/rival_kick.png", (72, 90)),
+    "rival_idle": ("sprites/rival_idle.png", (78, 96)),
+    "rival_run_1": ("sprites/rival_run_1.png", (78, 96)),
+    "rival_run_2": ("sprites/rival_run_2.png", (78, 96)),
+    "rival_jump": ("sprites/rival_jump.png", (78, 96)),
+    "rival_kick": ("sprites/rival_kick.png", (78, 96)),
     # The ball.
     "ball": ("sprites/ball.png", (30, 30)),
     # Goals in profile, flush with each screen edge -- two distinct files
@@ -51,12 +51,15 @@ SPRITE_SPECS: Dict[str, Tuple[str, Size]] = {
     # a scrolling advertising hoarding, and the grass strip -- replaces the
     # old top-down pitch_bg.png entirely. See assets/README.md.
     #
-    # bg_stadium ends exactly where the hoarding begins (config.HOARDING_Y),
-    # and the ground sprite starts config.GROUND_VISUAL_MARGIN above the
-    # actual collision line (config.GROUND_SPRITE_Y) -- a sourced depth
-    # trick that leaves a sliver of grass visible behind the players
-    # instead of the ground sprite starting exactly at their feet.
-    "bg_stadium": ("sprites/bg_stadium.png", (config.SCREEN_WIDTH, config.HOARDING_Y)),
+    # bg_stadium extends all the way down to where the ground sprite
+    # begins (config.GROUND_SPRITE_Y): the stands/sky proper stop at
+    # config.HOARDING_Y, and everything below that down to
+    # GROUND_SPRITE_Y is a plain perimeter wall-board colour -- render.py
+    # only ever draws the *scrolling* hoarding graphic in the span
+    # between the two goals, so the wall-board colour (not a live ad)
+    # shows behind each goal instead of the hoarding running through the
+    # goal mouth.
+    "bg_stadium": ("sprites/bg_stadium.png", (config.SCREEN_WIDTH, config.GROUND_SPRITE_Y)),
     "bg_hoarding": ("sprites/bg_hoarding.png", (config.HOARDING_WIDTH, config.HOARDING_HEIGHT)),
     "ground": ("sprites/ground.png", (config.SCREEN_WIDTH, config.GROUND_SPRITE_HEIGHT)),
     # The compact HUD scoreboard panel.
