@@ -78,31 +78,29 @@ DT = 1.0 / SIM_HZ
 # Chosen by tracing this exact seed's demo. These tick numbers are
 # re-traced after any change that shifts bodies' exact trajectories
 # frame to frame (physics, CPU behaviour, or balance constants) rather
-# than assumed stable -- most recently after tightening the CPU's
-# defensive discipline (CPU_MAX_ADVANCE_FRACTION) and the ball's header/
-# kick feel (BALL_RESTITUTION_HEAD, KICK_IMPULSE_SPEED) to close a
-# double-digit-per-side scoring tail: a genuinely more disciplined
-# defense makes the opening rally noticeably longer before the first
-# goal than an easier-to-score-against build does, which is exactly the
-# point of that change. This time-lapses one whole kickoff-to-kickoff
-# cycle rather than sampling it tick-for-tick -- see the module docstring:
+# than assumed stable -- most recently after a full ball-physics
+# rebalancing pass (bouncier/floatier ball, a real body collider fixing
+# the ball passing through a player, and retuned CPU/kick constants):
+# the livelier ball resolves its opening rally considerably faster than
+# the previous, heavier-feeling ball did. This time-lapses one whole
+# kickoff-to-kickoff cycle rather than sampling it tick-for-tick -- see
+# the module docstring:
 #
-#   tick    0 : KICKOFF, ball at center (the window's opening frame)
-#   tick   71 : PLAYING begins -- the opening rally
-#   tick 1400 : GOAL (score 0-1)
-#   tick 1521 : KICKOFF again, ball reset to center
-#   tick 1593 : PLAYING resumes -- the window's closing frame, a visual
-#               near-match for its own opening frame so the loop-back
-#               reads as another kickoff rather than a jump to a random
-#               moment.
-WINDOW_TICKS = 1593
+#   tick   0 : KICKOFF, ball at center (the window's opening frame)
+#   tick  71 : PLAYING begins -- the opening rally
+#   tick 241 : GOAL (score 0-1)
+#   tick 362 : KICKOFF again, ball reset to center
+#   tick 434 : PLAYING resumes -- the window's closing frame, a visual
+#              near-match for its own opening frame so the loop-back
+#              reads as another kickoff rather than a jump to a random
+#              moment.
+WINDOW_TICKS = 434
 
 FPS = 12  # independent of how the window was sampled -- see module docstring
-# 32 frames, evenly sampled across the whole WINDOW_TICKS span (not
-# consecutive ticks): 32/12 ~= 2.67s, comfortably inside the launcher's
-# "roughly 1-3s" guidance's generous upper end and well under
-# MAX_PREVIEW_FRAMES=64.
-FRAME_COUNT = 32
+# 20 frames, evenly sampled across the whole WINDOW_TICKS span (not
+# consecutive ticks): 20/12 ~= 1.67s, comfortably inside the launcher's
+# "roughly 1-3s" guidance and well under MAX_PREVIEW_FRAMES=64.
+FRAME_COUNT = 20
 STRIDE_TICKS = WINDOW_TICKS / (FRAME_COUNT - 1)
 
 OUT_WIDTH, OUT_HEIGHT = 200, 150
