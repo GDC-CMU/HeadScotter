@@ -51,15 +51,31 @@ class RawInput:
 
 # --- Keyboard fallbacks (for windowed development without two sticks) -----------
 # Two disjoint key sets, one per player, so both can be exercised at once on
-# a single keyboard; neither overlaps the menu's up/down keys.
+# a single keyboard.
 P1_MOVE_KEYS = {"a": -1, "d": 1}
 P2_MOVE_KEYS = {"left": -1, "right": 1}
 P1_JUMP_KEYS = frozenset({"w"})
-P1_KICK_KEYS = frozenset({"s"})
+# "x" is the primary keyboard kick key -- it matches the on-screen legend
+# ("X: KICK", the arcade button label) literally, which the *arcade*
+# cabinet's stick already did (BUTTON_KICK = BUTTON_X in config.py) but a
+# keyboard tester previously had no literal "x" key bound at all, only
+# "s". "s" is kept as an alternate so nothing regresses for anyone used
+# to it. "s" also doubles as MENU_DOWN_KEYS below; this is deliberately
+# safe, not an oversight -- see the note there.
+P1_KICK_KEYS = frozenset({"x", "s"})
 P2_JUMP_KEYS = frozenset({"up"})
-P2_KICK_KEYS = frozenset({"down"})
+# "down" mirrors P1's "s" (both sit directly under that hand's jump key);
+# "/" is P2's literal "x"-equivalent -- an easy-to-reach action key next
+# to the arrow cluster P2's movement/jump already use.
+P2_KICK_KEYS = frozenset({"down", "/"})
 
 MENU_UP_KEYS = frozenset({"up", "w"})
+# "s" here and in P1_KICK_KEYS above is a deliberate, safe overlap, not a
+# bug to remove: menu navigation only ever resolves while GameState is
+# ATTRACT (see Game._update_menu()), and kicking only ever resolves
+# during MATCH/DEMO (see Game._step_gameplay()) -- those states are
+# mutually exclusive, so the same physical key can never trigger both
+# interpretations on the same frame.
 MENU_DOWN_KEYS = frozenset({"down", "s"})
 CONFIRM_KEYS = frozenset({"return", "enter", "space"})
 # "Go back one level" -- Esc/Backspace on the keyboard, or button P1 (5)/B (0)

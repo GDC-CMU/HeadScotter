@@ -73,9 +73,18 @@ class JumpKickButtonTests(unittest.TestCase):
         self.assertTrue(input_mod.wants_jump_p1(RawInput(pressed_keys=frozenset({"w"}))))
         self.assertTrue(input_mod.wants_kick_p1(RawInput(pressed_keys=frozenset({"s"}))))
 
+    def test_p1_keyboard_kick_also_works_with_the_literal_x_key(self):
+        # "x" is the primary keyboard kick key -- it matches the on-screen
+        # legend ("X: KICK") literally; "s" is kept as an alternate so
+        # nothing regresses for anyone used to it.
+        self.assertTrue(input_mod.wants_kick_p1(RawInput(pressed_keys=frozenset({"x"}))))
+
     def test_p2_keyboard_jump_and_kick(self):
         self.assertTrue(input_mod.wants_jump_p2(RawInput(pressed_keys=frozenset({"up"}))))
         self.assertTrue(input_mod.wants_kick_p2(RawInput(pressed_keys=frozenset({"down"}))))
+
+    def test_p2_keyboard_kick_also_works_with_the_slash_key(self):
+        self.assertTrue(input_mod.wants_kick_p2(RawInput(pressed_keys=frozenset({"/"}))))
 
     def test_single_player_jump_from_either_device(self):
         raw = RawInput(buttons_by_device=(frozenset(), frozenset({config.BUTTON_A})))
