@@ -97,7 +97,7 @@ def _draw_stage(screen, game: Game) -> None:
         screen.blit(hoarding, (x, config.HOARDING_Y))
         x += hoarding_w
 
-    screen.blit(assets.get("ground"), (0, config.GROUND_Y))
+    screen.blit(assets.get("ground"), (0, config.GROUND_SPRITE_Y))
 
 
 def _draw_goals(screen) -> None:

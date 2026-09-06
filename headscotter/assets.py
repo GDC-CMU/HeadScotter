@@ -50,9 +50,15 @@ SPRITE_SPECS: Dict[str, Tuple[str, Size]] = {
     # The side-view stage: stadium backdrop (sky/stands/crowd/floodlights),
     # a scrolling advertising hoarding, and the grass strip -- replaces the
     # old top-down pitch_bg.png entirely. See assets/README.md.
-    "bg_stadium": ("sprites/bg_stadium.png", (config.SCREEN_WIDTH, config.GROUND_Y)),
+    #
+    # bg_stadium ends exactly where the hoarding begins (config.HOARDING_Y),
+    # and the ground sprite starts config.GROUND_VISUAL_MARGIN above the
+    # actual collision line (config.GROUND_SPRITE_Y) -- a sourced depth
+    # trick that leaves a sliver of grass visible behind the players
+    # instead of the ground sprite starting exactly at their feet.
+    "bg_stadium": ("sprites/bg_stadium.png", (config.SCREEN_WIDTH, config.HOARDING_Y)),
     "bg_hoarding": ("sprites/bg_hoarding.png", (config.HOARDING_WIDTH, config.HOARDING_HEIGHT)),
-    "ground": ("sprites/ground.png", (config.SCREEN_WIDTH, config.GROUND_HEIGHT)),
+    "ground": ("sprites/ground.png", (config.SCREEN_WIDTH, config.GROUND_SPRITE_HEIGHT)),
     # The compact HUD scoreboard panel.
     "scoreboard": ("sprites/scoreboard.png", (config.SCOREBOARD_WIDTH, config.SCOREBOARD_HEIGHT)),
 }

@@ -89,15 +89,28 @@ NET_COLOR = (150, 150, 150)  # sourced: mid-grey, so the ball stays readable aga
 # --- Stadium backdrop geometry (art layout; consumed by render.py and
 # tools/generate_placeholders.py) --------------------------------------------
 GROUND_HEIGHT = SCREEN_HEIGHT - GROUND_Y  # 100 -- the grass strip below GROUND_Y
+# Sourced depth trick: martinlhw/Head_Soccer:v3/game.py:34,46,460 draws its
+# visual grass band starting 40px *above* the actual collision line the
+# characters stand on (grass blitted at y=250, collision line at y=290 on
+# their 330-tall screen) -- so the feet line falls partway down the grass
+# band rather than exactly at its top edge, leaving a sliver of pitch
+# visible behind the players. This is purely a rendering offset: it does
+# not move GROUND_Y (the real physics collision line) at all, only where
+# the ground *sprite* is drawn relative to it.
+GROUND_VISUAL_MARGIN = 40
+GROUND_SPRITE_HEIGHT = GROUND_HEIGHT + GROUND_VISUAL_MARGIN  # 140
+GROUND_SPRITE_Y = GROUND_Y - GROUND_VISUAL_MARGIN  # 460 -- top-left the ground sprite is blitted at
 # Scrolling advertising hoarding: sourced position/size convention (sits
 # directly above the grass, on the lower stadium band) from martinlhw/
 # Head_Soccer, rescaled proportionally from its 330-tall screen to this
 # project's 600-tall one (their band was 50/330 = 0.152 of H; 0.152*600 ~= 91,
 # but that source's crowd tiers ate far more vertical space than this build's
 # stadium art needs -- a slimmer 50px band reads just as well at this scale
-# and keeps more of the backdrop as legible crowd/stand art).
+# and keeps more of the backdrop as legible crowd/stand art). Sits directly
+# above the ground *sprite* (GROUND_SPRITE_Y), not above GROUND_Y itself, so
+# it never gets covered by the grass depth margin above.
 HOARDING_HEIGHT = 50
-HOARDING_Y = GROUND_Y - HOARDING_HEIGHT  # 450 -- sits on the grass, per the source
+HOARDING_Y = GROUND_SPRITE_Y - HOARDING_HEIGHT  # 410
 HOARDING_WIDTH = 560  # sourced (martinlhw's banner width, used verbatim)
 # Not sourced numerically -- the report documents that the hoarding "scrolls
 # continuously" but no implementation measures a speed. Chosen slow enough to

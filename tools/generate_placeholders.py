@@ -43,10 +43,15 @@ SCOTTY_OUTLINE = (96, 72, 40)
 SCOTTY_TRIM = (196, 32, 48)
 
 # --- Rival: cool blue-grey, a completely different silhouette -----------------------
+# Trim is a crisp near-white rather than a third hue -- pairs with the
+# blue body as a "blue kit" the same way Scotty's red trim pairs with
+# his cream coat as a "red kit", so the match reads as the genre's
+# standard red-vs-blue color-plus-mirroring opposition (see the genre
+# research report, section 3d) rather than three competing colors.
 RIVAL_BODY = (150, 190, 235)
 RIVAL_SHADE = (108, 146, 196)
 RIVAL_OUTLINE = (40, 58, 92)
-RIVAL_TRIM = (255, 176, 40)
+RIVAL_TRIM = (240, 246, 252)
 
 # --- Stadium palette -----------------------------------------------------------------
 SKY_TOP = (94, 168, 224)
@@ -60,7 +65,6 @@ CROWD_COLORS = [
     (214, 60, 60), (240, 210, 90), (235, 235, 235), (70, 120, 200), (90, 170, 110),
 ]
 GRASS_LIGHT = (58, 150, 76)
-GRASS_DARK = (46, 132, 64)
 GOAL_POST = (238, 238, 238)
 GOAL_OUTLINE = (55, 60, 65)
 
@@ -312,21 +316,28 @@ def make_goal_right(size):
 
 # --- Stadium backdrop ----------------------------------------------------------------
 def make_bg_stadium(size):
-    """Sky, floodlights, tiered stands, and a dithered crowd -- what
-    replaces the old top-down green pitch wall. No pitch markings are
-    drawn anywhere in this file, on purpose: the genre research report
-    found zero side-view head-soccer implementations that draw a centre
-    circle, halfway line, or boundary rect.
+    """Sky, floodlights, tiered stands, and a crowd -- what replaces the
+    old top-down green pitch wall. No pitch markings are drawn anywhere
+    in this file, on purpose: the genre research report found zero
+    side-view head-soccer implementations that draw a centre circle,
+    halfway line, or boundary rect.
+
+    The crowd is deliberately restrained rather than maximally dense:
+    per the report, the *minimal* fidelity tier some clones use is
+    nothing more than a flat sky fill, and a clean sky-plus-stands
+    silhouette reads better at this resolution than a maximally busy
+    one -- so this leans toward "readable texture", not "as many dots
+    as will fit".
     """
     w, h = size
     surf = pygame.Surface(size)
 
-    horizon = round(h * 0.62)
+    horizon = round(h * 0.55)
     for y in range(horizon):
         t = y / max(1, horizon - 1)
         surf.fill(_lerp_color(SKY_TOP, SKY_HORIZON, t), (0, y, w, 1))
 
-    stand_top = round(h * 0.30)
+    stand_top = round(h * 0.20)
     tier_h = (h - stand_top) // 3
     tiers = [
         (stand_top, STAND_FAR),
@@ -341,28 +352,28 @@ def make_bg_stadium(size):
         pygame.draw.rect(surf, _lerp_color(color, (255, 255, 255), 0.25), (0, tier_y, w, 3))
 
     # Crowd: small figures on a deterministic formulaic scatter (not
-    # random.random(), so regenerating this file twice is byte-identical),
-    # sparse enough to read as individual spectators rather than a solid
-    # band -- roughly a third of each row is left as empty seat/gap, and
-    # the far tier's figures are smaller and more sparsely spaced than the
-    # near tier's, a cheap depth cue.
-    for tier_index, (tier_y, _color) in enumerate(tiers):
-        # Nearest tier (index 2) gets the biggest, densest figures.
+    # random.random(), so regenerating this file twice is byte-identical).
+    # Wide gaps between figures and a muted palette (each crowd color is
+    # blended toward its tier's own background shade, not shown at full
+    # saturation) keep this reading as a distant, textured crowd rather
+    # than a wall of bright confetti competing with the gameplay below it.
+    for tier_index, (tier_y, tier_color) in enumerate(tiers):
         dot_w = 4 + tier_index
         dot_h = 5 + tier_index
-        col_pitch = 11 - tier_index  # far tier: sparser horizontally too
-        row_pitch = dot_h + 5
+        col_pitch = 20 - tier_index * 2  # far tier: sparser horizontally too
+        row_pitch = dot_h + 10
         rows = max(1, (tier_h - 12) // row_pitch)
         cols = w // col_pitch
         for row in range(rows):
             y = tier_y + 8 + row * row_pitch
             for col in range(cols):
-                # Skip roughly a third of the slots so gaps between
-                # spectators are visible instead of a solid wall of color.
-                if (col * 7 + row * 3 + tier_index * 5) % 3 == 0:
+                # Skip most slots so gaps between spectators dominate --
+                # a texture, not a solid band.
+                if (col * 7 + row * 3 + tier_index * 5) % 5 != 0:
                     continue
                 x = col * col_pitch + ((row + tier_index) % 2) * (col_pitch // 2)
-                color = CROWD_COLORS[(col * 3 + row * 5 + tier_index * 7) % len(CROWD_COLORS)]
+                raw_color = CROWD_COLORS[(col * 3 + row * 5 + tier_index * 7) % len(CROWD_COLORS)]
+                color = _lerp_color(raw_color, tier_color, 0.35)
                 pygame.draw.rect(surf, color, (x, y, dot_w, dot_h))
 
     # Floodlights: four poles with a glowing fixture, evenly spread.
@@ -375,9 +386,6 @@ def make_bg_stadium(size):
             lx = head_rect.left + 6 + i * 8
             pygame.draw.circle(surf, FLOODLIGHT_GLOW, (lx, head_rect.centery), 3)
 
-    # Perimeter wall band at the very bottom, behind where the scrolling
-    # hoarding sprite will be blitted on top (see config.HOARDING_Y).
-    pygame.draw.rect(surf, (24, 30, 36), (0, h - config.HOARDING_HEIGHT, w, config.HOARDING_HEIGHT))
     return surf
 
 
@@ -403,16 +411,24 @@ def make_bg_hoarding(size):
 
 
 def make_ground(size):
+    """A single flat-colour grass rectangle -- the sourced genre
+    convention (research report, section 1c): "Plain, flat, single
+    colour. Every implementation draws it as one filled rectangle. No
+    mowed stripes, no gradient, no perspective in any of the seven."
+    Mowing stripes are a top-down cue (only visible looking straight
+    down at a lawn) and were exactly the previous build's mistake.
+
+    The one genuine depth trick the report documents (martinlhw/
+    Head_Soccer) is handled by *layout*, not by anything drawn here:
+    this sprite is taller than the ground band below the collision line
+    and is blitted starting config.GROUND_VISUAL_MARGIN above it (see
+    config.GROUND_SPRITE_Y), so a sliver of grass is visible behind the
+    players' feet instead of the sprite starting exactly at the
+    collision line.
+    """
     w, h = size
     surf = pygame.Surface(size)
-    stripe_w = 44
-    for i, x in enumerate(range(0, w, stripe_w)):
-        color = GRASS_LIGHT if i % 2 == 0 else GRASS_DARK
-        pygame.draw.rect(surf, color, (x, 0, stripe_w, h))
-    # A subtle lighter band along the very top edge -- the "front lip" of
-    # the grass nearest the pitch, giving the strip a touch of depth
-    # without any perspective drawing or pitch markings.
-    pygame.draw.rect(surf, _lerp_color(GRASS_LIGHT, (255, 255, 255), 0.12), (0, 0, w, 4))
+    surf.fill(GRASS_LIGHT)
     return surf
 
 

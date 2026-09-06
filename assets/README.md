@@ -104,9 +104,9 @@ cool blue-grey with orange trim.
 
 | File | Size | Used for |
 |---|---|---|
-| `bg_stadium.png` | 800x500 | Sky, floodlights, tiered stands, and a crowd -- everything above the grass (`config.GROUND_Y`). Static; drawn once per frame at `(0, 0)`. |
-| `bg_hoarding.png` | 560x50 | A scrolling advertising band, sitting on the grass at `config.HOARDING_Y`. `render.py` blits this twice with a wrapping horizontal offset (`config.HOARDING_SCROLL_SPEED`) for a continuous scroll -- a genre-standard trick, cheap and effective. |
-| `ground.png` | 800x100 | The flat grass strip below `config.GROUND_Y`. Deliberately plain (mow-stripe texture only) -- see "no pitch markings" above. |
+| `bg_stadium.png` | 800x410 | Sky, floodlights, tiered stands, and a crowd. Static; drawn once per frame at `(0, 0)`, ending exactly where the hoarding begins (`config.HOARDING_Y`). |
+| `bg_hoarding.png` | 560x50 | A scrolling advertising band, sitting directly above the grass at `config.HOARDING_Y`. `render.py` blits this twice with a wrapping horizontal offset (`config.HOARDING_SCROLL_SPEED`) for a continuous scroll -- a genre-standard trick, cheap and effective. |
+| `ground.png` | 800x140 | The grass strip. **A single flat colour, no mowed stripes** -- the sourced genre convention (the research report found zero side-view implementations that draw stripes, a gradient, or perspective on the ground; mowed stripes are a top-down cue and were exactly the previous build's mistake). Drawn taller than the visible ground band and blitted starting `config.GROUND_VISUAL_MARGIN` (40px) *above* the actual collision line (`config.GROUND_SPRITE_Y`, not `config.GROUND_Y`) -- a second sourced trick (martinlhw/Head_Soccer) that leaves a sliver of grass visible behind the players instead of the ground starting exactly at their feet. This offset is purely a rendering detail; it never moves the real physics ground line. |
 
 ## Goals
 
