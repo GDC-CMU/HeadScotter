@@ -1,157 +1,316 @@
-"""Tests for the 1P mode's CPU opponent: it tracks the ball, jumps when
-overhead, kicks in range, has a genuine reaction lag, and is beatable."""
+"""Delayed, fair CPU decisions and decisive live head-soccer scenarios.
+
+Old "stop on the ball"/"jump merely because overhead" assertions have been
+replaced by useful-side setup and actual airborne contacts. Scenario results
+come from Game.update in PLAYING, including the real two-body/ball collisions.
+"""
 from __future__ import annotations
 
+import copy
+import math
 import random
 import unittest
+from collections import Counter
+from unittest.mock import patch
 
-from headscotter import config
+from headscotter import config, physics, players
 from headscotter.cpu import CPUController
+from headscotter.game import Game
+from headscotter.input import RawInput
+from headscotter.match import MatchPhase
 from headscotter.physics import Ball
 from headscotter.players import new_player
 
 
-class CPUTrackingTests(unittest.TestCase):
-    def test_cpu_moves_toward_the_ball(self):
-        cpu_ctrl = CPUController(rng=random.Random(1))
-        player = new_player(config.PITCH_CENTER_X, facing=-1)
-        ball = Ball(x=config.PITCH_RIGHT - 100, y=config.GROUND_Y - 50)
-        # First tick establishes perception; subsequent ticks should steer right.
-        cpu_ctrl.update(0.0, ball, player)
-        intent = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
-        self.assertGreaterEqual(intent.move, 0)
-
-    def test_cpu_does_not_stand_still_while_ball_moves_away(self):
-        cpu_ctrl = CPUController(rng=random.Random(2))
-        player = new_player(config.PITCH_CENTER_X, facing=1)
-        ball = Ball(x=config.PITCH_CENTER_X, y=config.GROUND_Y - 50, vx=0.0, vy=0.0)
-        moves_seen = set()
-        for i in range(10):
-            ball.x = config.PITCH_CENTER_X + i * 40  # ball marches away to the right
-            intent = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
-            moves_seen.add(intent.move)
-        self.assertIn(1, moves_seen)  # it does chase at some point, not frozen at 0 forever
-
-    def test_cpu_stops_within_the_deadzone(self):
-        cpu_ctrl = CPUController(rng=random.Random(3))
-        player = new_player(config.PITCH_CENTER_X, facing=1)
-        ball = Ball(x=config.PITCH_CENTER_X, y=config.GROUND_Y - 50)
-        cpu_ctrl.update(0.0, ball, player)
-        intent = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
-        self.assertEqual(intent.move, 0)
+# Canonical right-hand CPU; the same fixtures are mirrored for the left.
+# CPU x, opponent x, ball x/y/vx/vy, budget in live frames.
+SCENARIOS = {
+    "pursuit": (640, 120, 350, 380, -160, 0, 90),
+    "blocker": (620, 450, 260, 485, 0, 0, 180),
+    "jumping_blocker": (540, 450, 260, 485, 0, 0, 180),
+    "header": (600, 150, 520, 250, 120, 100, 60),
+    "defend": (690, 120, 500, 465, 600, 0, 60),
+    "recover_ball": (300, 680, 400, 485, 0, 0, 240),
+    "passive": (610, 190, 400, 485, 0, 0, 1800),
+}
 
 
-class CPUJumpTests(unittest.TestCase):
-    def test_cpu_jumps_when_ball_is_overhead(self):
-        cpu_ctrl = CPUController(rng=random.Random(4))
-        player = new_player(config.PITCH_CENTER_X, facing=1)
-        ball = Ball(x=config.PITCH_CENTER_X, y=player.y - config.HEAD_OFFSET_Y - 10)
-        cpu_ctrl.update(0.0, ball, player)
-        intent = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
-        self.assertTrue(intent.jump)
+def run_scenario(name: str, *, mirror=False, seed=8):
+    """Reusable measurements for tests/handoff; no high-score or artifact writes."""
+    cx, ox, bx, by, vx, vy, budget = SCENARIOS[name]
+    game = Game(rng=random.Random(seed))
+    game.start_match("2P")  # never writes a 1P record
+    game.match.phase = MatchPhase.PLAYING
+    bot = game.player_left if mirror else game.player_right
+    opponent = game.player_right if mirror else game.player_left
+    controller = CPUController(rng=game.rng, defend_x=config.PITCH_LEFT if mirror else config.PITCH_RIGHT)
+    if mirror:
+        game.cpu_left = controller
+    else:
+        game.cpu_right = controller
+    game._priority_swap = mirror  # mirror the existing tie-resolution order too
+    reflect = lambda x: config.PITCH_LEFT + config.PITCH_RIGHT - x if mirror else x
+    bot.x, opponent.x = reflect(cx), reflect(ox)
+    game.ball = Ball(reflect(bx), by, -vx if mirror else vx, vy)
+    if name == "jumping_blocker":
+        players.apply_jump(opponent)
 
-    def test_cpu_does_not_jump_when_ball_is_far_overhead_horizontally(self):
-        cpu_ctrl = CPUController(rng=random.Random(5))
-        player = new_player(config.PITCH_CENTER_X, facing=1)
-        ball = Ball(x=config.PITCH_CENTER_X + 400, y=player.y - config.HEAD_OFFSET_Y)
-        cpu_ctrl.update(0.0, ball, player)
-        intent = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
-        self.assertFalse(intent.jump)
+    attack = controller.attack_direction
+    counts, first = Counter(), {}
+    needs_crossing = (bot.x - opponent.x) * attack <= 0
+    needs_midfield = (bot.x - config.PITCH_CENTER_X) * attack <= 0
+    crossing_clearance = None
+    max_height = 0.0
+    frame = 0
+    original_head = players.apply_head_collision
+    original_kick = players.normal_kick
+    original_power = players.update_power_shot
 
-    def test_cpu_does_not_jump_when_already_airborne(self):
-        cpu_ctrl = CPUController(rng=random.Random(6))
-        player = new_player(config.PITCH_CENTER_X, facing=1)
-        player.on_ground = False
-        ball = Ball(x=config.PITCH_CENTER_X, y=player.y - config.HEAD_OFFSET_Y - 10)
-        cpu_ctrl.update(0.0, ball, player)
-        intent = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
-        self.assertFalse(intent.jump)
+    def contact(player, ball, on_impact=None):
+        def hit():
+            # Forecast bodies are copies: don't count predicted contacts.
+            if player is bot:
+                counts["headers"] += 1
+                first.setdefault("header", frame)
+                if not bot.on_ground:
+                    counts["air_headers"] += 1
+                if ball.vx * attack > 0:
+                    counts["forward_headers"] += 1
+            if on_impact is not None:
+                on_impact()
+        return original_head(player, ball, hit)
+
+    def kick(player, ball):
+        result = original_kick(player, ball)
+        if player is bot and result.fired:
+            counts["normal_shots"] += 1
+            first.setdefault("shot", frame)
+            assert ball.vx * attack > 0, "CPU normal shot points at its own goal"
+        return result
+
+    def power(player, ball, held, dt):
+        result = original_power(player, ball, held, dt)
+        if player is bot and result.fired:
+            counts["power_shots"] += 1
+            first.setdefault("shot", frame)
+            assert ball.vx * attack > 0, "CPU power release points at its own goal"
+        return result
+
+    with patch("headscotter.players.apply_head_collision", new=contact), \
+            patch("headscotter.players.normal_kick", new=kick), \
+            patch("headscotter.players.update_power_shot", new=power):
+        for frame in range(1, budget + 1):
+            old_x, old_opp_x, grounded = bot.x, opponent.x, bot.on_ground
+            game.update(1 / 60, RawInput())
+            if grounded and not bot.on_ground:
+                counts["jumps"] += 1
+                first.setdefault("jump", frame)
+            if not grounded and bot.on_ground:
+                first.setdefault("landing", frame)
+            if needs_midfield and (bot.x - config.PITCH_CENTER_X) * attack > 0:
+                first.setdefault("midfield", frame)
+            if needs_crossing and crossing_clearance is None and (bot.x - opponent.x) * attack > 0:
+                first["cross"] = frame
+                crossing_clearance = abs(bot.y - opponent.y)
+            if abs(bot.x - opponent.x) < 2 * config.PLAYER_HALF_WIDTH - 1e-6:
+                assert abs(bot.y - opponent.y) >= config.PLAYER_HEIGHT, "interpenetrating bodies"
+            if (abs(old_x - old_opp_x) >= 2 * config.PLAYER_HALF_WIDTH
+                    and abs(bot.x - opponent.x) > 2 * config.PLAYER_HALF_WIDTH + 1e-6):
+                assert abs(bot.x - old_x) <= config.PLAYER_SPEED / 60 + 1e-6, "nonphysical movement"
+            assert all(math.isfinite(value) for value in
+                       (bot.x, bot.y, bot.vy, opponent.x, opponent.y, game.ball.x,
+                        game.ball.y, game.ball.vx, game.ball.vy))
+            assert game.ball.speed() <= config.BALL_MAX_SPEED + 1e-6
+            max_height = max(max_height, config.GROUND_Y - bot.y)
+            if game.match.phase is not MatchPhase.PLAYING:
+                break
+    assert game.match.time_remaining < config.MATCH_SECONDS, "scenario never advanced live play"
+    return {
+        "scenario": name, "side": "left" if mirror else "right", "seed": seed,
+        "frames": frame, "cpu_goals": game.match.score_left if mirror else game.match.score_right,
+        "human_goals": game.match.score_right if mirror else game.match.score_left,
+        "first": first, "counts": dict(counts),
+        "crossing_clearance": crossing_clearance, "max_jump_height": max_height,
+        "final_x_from_right_fixture": reflect(bot.x),
+    }
 
 
-class CPUKickTests(unittest.TestCase):
-    def test_cpu_kicks_when_ball_is_in_range(self):
-        """Edge-triggered: kick fires the frame the ball *newly* enters
-        range, mimicking a human's quick tap-and-kick -- see cpu.py's
-        note on why this must not be a level signal (players.update_kick()
-        now charges a power shot for as long as its input is held)."""
-        cpu_ctrl = CPUController(rng=random.Random(7))
-        player = new_player(config.PITCH_CENTER_X, facing=1)
-        far_ball = Ball(x=player.x + 500, y=player.y)
-        cpu_ctrl.update(0.0, far_ball, player)  # perceives the ball out of range first
-        ball = Ball(x=player.x + 20, y=player.y - 40)
-        intent = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
-        self.assertTrue(intent.kick)
+class CPUObservationTests(unittest.TestCase):
+    def test_ball_and_opponent_are_observed_only_on_reaction_ticks(self):
+        ctrl = CPUController(rng=random.Random(10))
+        player, opponent = new_player(600, -1), new_player(200, 1)
+        ball = Ball(400, 200)
+        ctrl.update(0, ball, player, opponent)
+        ball.x, opponent.x = 750, 500
+        ctrl.update(0.001, ball, player, opponent)
+        self.assertEqual(ctrl._known_ball_x, 400)
+        self.assertEqual(ctrl._opponent.x, 200)
+        ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player, opponent)
+        self.assertEqual(ctrl._known_ball_x, 750)
+        self.assertEqual(ctrl._opponent.x, 500)
 
-    def test_cpu_does_not_keep_kicking_while_ball_stays_in_range(self):
-        """The whole point of the edge trigger: once the ball has been
-        in range for one frame, subsequent frames must not also report
-        kick=True just because it is still there -- otherwise a CPU
-        "holds" the kick control for as long as the ball lingers, which
-        is exactly the bug that made every CPU kick charge into an
-        unintended power shot."""
-        cpu_ctrl = CPUController(rng=random.Random(7))
-        player = new_player(config.PITCH_CENTER_X, facing=1)
-        ball = Ball(x=player.x + 20, y=player.y - 40)
-        first = cpu_ctrl.update(0.0, ball, player)
-        second = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
-        third = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
-        self.assertTrue(first.kick)
-        self.assertFalse(second.kick)
-        self.assertFalse(third.kick)
+    def test_extrapolation_uses_actual_ball_gravity_and_drag(self):
+        ctrl = CPUController(rng=random.Random(1))
+        ball = Ball(400, 200, 50, 30)
+        ctrl._perceive(0, ball)
+        expected = copy.deepcopy(ball)
+        physics.step_ball(expected, 0.05)
+        ctrl._perceive(0.05, ball)
+        self.assertAlmostEqual(ctrl._known_ball_vy, 30 + config.BALL_GRAVITY * 0.05)
+        self.assertAlmostEqual(ctrl._known_ball_x, expected.x)
+        self.assertAlmostEqual(ctrl._known_ball_y, expected.y)
+        self.assertAlmostEqual(ctrl._known_ball_vx, expected.vx)
 
-    def test_cpu_does_not_kick_when_ball_is_far_away(self):
-        cpu_ctrl = CPUController(rng=random.Random(8))
-        player = new_player(config.PITCH_CENTER_X, facing=1)
-        ball = Ball(x=player.x + 500, y=player.y)
-        cpu_ctrl.update(0.0, ball, player)
-        intent = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
-        self.assertFalse(intent.kick)
+    def test_prediction_bounces_without_changing_real_bodies_or_requesting_audio(self):
+        ctrl = CPUController(rng=random.Random(1))
+        player, opponent = new_player(600, -1), new_player(190, 1)
+        ball = Ball(400, 475, 0, 200)
+        before = copy.deepcopy((player, opponent, ball))
+        with patch("headscotter.audio.play") as play:
+            ctrl.update(0, ball, player, opponent)
+        play.assert_not_called()
+        self.assertEqual((player, opponent, ball), before)
+        self.assertTrue(any(sample.vy < 0 for _, sample in ctrl._trajectory))
 
-    def test_cpu_respects_the_kickers_own_cooldown(self):
-        cpu_ctrl = CPUController(rng=random.Random(9))
-        player = new_player(config.PITCH_CENTER_X, facing=1)
-        player.kick_cooldown = config.KICK_COOLDOWN_SECONDS
-        far_ball = Ball(x=player.x + 500, y=player.y)
-        cpu_ctrl.update(0.0, far_ball, player)
-        ball = Ball(x=player.x + 20, y=player.y - 40)
-        intent = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
-        self.assertFalse(intent.kick)
-
-
-class CPUReactionLagTests(unittest.TestCase):
-    def test_cpu_perception_lags_behind_a_sudden_ball_teleport(self):
-        """This is what makes the CPU beatable: it does not instantly
-        know the ball moved -- see cpu.CPUController._perceive()."""
-        cpu_ctrl = CPUController(rng=random.Random(10))
-        player = new_player(config.PITCH_LEFT + 200, facing=1)
-        ball = Ball(x=config.PITCH_LEFT + 200, y=config.GROUND_Y - 50)
-        cpu_ctrl.update(0.0, ball, player)  # first perception tick, at the ball's original spot
-
-        ball.x = config.PITCH_RIGHT - 200  # the ball is suddenly far away
-        # A single, tiny frame right after the teleport: far too little
-        # time has passed for another perception tick to have occurred.
-        cpu_ctrl.update(0.001, ball, player)
-        self.assertLess(cpu_ctrl._known_ball_x, config.PITCH_CENTER_X)  # still thinks it's on the left
-
-    def test_cpu_aim_error_is_not_always_zero(self):
-        """Re-rolled every perception tick -- confirms the CPU is not
-        pixel-perfect even once it has "seen" the ball."""
-        cpu_ctrl = CPUController(rng=random.Random(11))
-        player = new_player(config.PITCH_CENTER_X, facing=1)
-        ball = Ball(x=config.PITCH_CENTER_X, y=config.GROUND_Y - 50)
+    def test_observation_keeps_imperfect_aim_and_reset_clears_commitments(self):
+        ctrl = CPUController(rng=random.Random(11))
         errors = set()
-        for _ in range(20):
-            cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
-            errors.add(round(cpu_ctrl._aim_error, 3))
+        for _ in range(12):
+            ctrl._perceive(config.CPU_REACTION_DELAY_SECONDS, Ball(400, 200))
+            errors.add(ctrl._aim_error)
         self.assertGreater(len(errors), 1)
+        self.assertGreater(config.CPU_AIM_ERROR_PX, 0)
+        self.assertEqual(config.CPU_REACTION_DELAY_SECONDS, 0.18)
+        ctrl._cross_direction, ctrl._cross_remaining, ctrl._header_target_x = -1, 0.5, 300
+        ctrl.reset()
+        self.assertFalse(ctrl._has_perceived)
+        self.assertEqual(ctrl._trajectory, [])
+        self.assertEqual(ctrl._cross_direction, 0)
+        self.assertEqual(ctrl._cross_remaining, 0)
+        self.assertIsNone(ctrl._header_target_x)
 
-    def test_reset_forgets_prior_perception(self):
-        cpu_ctrl = CPUController(rng=random.Random(12))
-        player = new_player(config.PITCH_CENTER_X, facing=1)
-        ball = Ball(x=config.PITCH_CENTER_X, y=config.GROUND_Y - 50)
-        cpu_ctrl.update(0.0, ball, player)
-        cpu_ctrl.reset()
-        self.assertFalse(cpu_ctrl._has_perceived)
+
+class CPUActionTests(unittest.TestCase):
+    def test_shot_setup_is_goal_side_not_centered_on_the_ball(self):
+        ctrl = CPUController(rng=random.Random(3))
+        player = new_player(400, -1)
+        intent = ctrl.update(0, Ball(400, 485), player)
+        self.assertEqual(intent.move, 1)
+        self.assertFalse(intent.normal_kick)  # don't shoot while facing own goal
+
+    def test_immediate_clearance_uses_this_frames_facing_and_ignores_power_recovery(self):
+        ctrl = CPUController(rng=random.Random(7))
+        player = new_player(690, 1)  # wrong old facing
+        player.kick_cooldown = 0.9
+        intent = ctrl.update(1 / 60, Ball(650, 485, 400, 0), player)
+        self.assertEqual(intent.move, -1)
+        self.assertTrue(intent.normal_kick)
+        self.assertFalse(intent.power_held)
+        self.assertFalse(ctrl.update(1 / 60, Ball(650, 485, 400, 0), player).normal_kick)
+
+    def test_stationary_setup_can_turn_and_charge_at_outer_human_kick_range(self):
+        ctrl = CPUController(rng=random.Random(1))
+        player, opponent = new_player(289, 1), new_player(190, 1)
+        ctrl._perceive(0, Ball(235, 485), opponent)
+        intent = ctrl.update(1 / 60, Ball(235, 485), player, opponent)
+        self.assertEqual(intent.move, -1)
+        self.assertTrue(intent.power_held)
+
+    def test_charge_holds_its_stance_and_releases_outward(self):
+        ctrl = CPUController(rng=random.Random(1))
+        player = new_player(289, -1)
+        player.kick_charge = 0.2
+        intent = ctrl.update(1 / 60, Ball(235, 485), player, new_player(190, 1))
+        self.assertEqual(intent.move, 0)
+        self.assertTrue(intent.power_held)
+        self.assertFalse(intent.normal_kick)
+        player.kick_charge = config.POWER_SHOT_CHARGE_SECONDS
+        release = ctrl.update(1 / 60, Ball(235, 485), player)
+        self.assertEqual(release.move, 0)
+        self.assertFalse(release.power_held)
+        self.assertFalse(release.normal_kick)
+
+    def test_steep_rising_rebound_is_not_flattened_by_a_normal_kick(self):
+        ctrl = CPUController(rng=random.Random(1))
+        player = new_player(400, -1)
+        player.kick_cooldown = 0.9
+        intent = ctrl.update(1 / 60, Ball(360, 470, -100, -500), player)
+        self.assertFalse(intent.normal_kick)
+
+    def test_human_physical_constants_are_unchanged(self):
+        self.assertEqual((config.PLAYER_HEIGHT, config.HEAD_RADIUS, config.PLAYER_HALF_WIDTH), (85, 32, 20))
+        self.assertEqual((config.PLAYER_SPEED, config.JUMP_VELOCITY, config.GRAVITY), (260, -780, 2160))
+        self.assertEqual((config.BALL_GRAVITY, config.BALL_MAX_SPEED), (1300, 900))
+        self.assertEqual((config.KICK_IMPULSE_SPEED, config.POWER_SHOT_IMPULSE_SPEED), (300, 850))
+
+
+class LiveCPUScenarios(unittest.TestCase):
+    def test_retrieves_a_moving_ball_beyond_the_old_leash_promptly(self):
+        for mirror in (False, True):
+            result = run_scenario("pursuit", mirror=mirror)
+            self.assertLessEqual(result["first"]["midfield"], 65, result)
+            self.assertLess(result["final_x_from_right_fixture"], 400, result)
+
+    def test_legitimate_jump_crosses_stationary_and_airborne_blockers(self):
+        for name in ("blocker", "jumping_blocker"):
+            for mirror in (False, True):
+                result = run_scenario(name, mirror=mirror)
+                self.assertLessEqual(result["first"]["cross"], 70, result)
+                self.assertGreaterEqual(result["crossing_clearance"], config.PLAYER_HEIGHT, result)
+                self.assertGreater(result["first"]["landing"], result["first"]["cross"], result)
+                self.assertLessEqual(result["first"]["landing"], 80, result)
+                self.assertLessEqual(result["max_jump_height"], config.JUMP_VELOCITY ** 2 / (2 * config.GRAVITY))
+                self.assertEqual(result["cpu_goals"], 1, result)
+                self.assertEqual(result["human_goals"], 0, result)
+
+    def test_reachable_airborne_ball_receives_a_real_airborne_header(self):
+        for mirror in (False, True):
+            result = run_scenario("header", mirror=mirror)
+            self.assertGreater(result["counts"].get("air_headers", 0), 0, result)
+            self.assertGreater(result["counts"].get("forward_headers", 0), 0, result)
+            self.assertLessEqual(result["first"]["header"], 40, result)
+
+    def test_actual_incoming_goal_threat_is_intercepted_not_abandoned(self):
+        for mirror in (False, True):
+            result = run_scenario("defend", mirror=mirror)
+            self.assertEqual(result["human_goals"], 0, result)
+            self.assertGreater(result["counts"].get("normal_shots", 0) + result["counts"].get("headers", 0), 0, result)
+            self.assertLessEqual(result["first"]["shot"], 30, result)
+
+    def test_recovers_to_ball_goal_side_without_waiting_for_a_distant_opponent(self):
+        for mirror in (False, True):
+            result = run_scenario("recover_ball", mirror=mirror)
+            self.assertGreater(result["counts"].get("jumps", 0), 0, result)
+            self.assertGreater(result["counts"].get("power_shots", 0), 0, result)
+            self.assertEqual(result["cpu_goals"], 1, result)
+            self.assertEqual(result["human_goals"], 0, result)
+
+    def test_attacks_and_scores_against_stationary_starting_human(self):
+        for seed in (1, 8, 13):
+            for mirror in (False, True):
+                result = run_scenario("passive", mirror=mirror, seed=seed)
+                self.assertEqual(result["cpu_goals"], 1, result)
+                self.assertEqual(result["human_goals"], 0, result)
+                self.assertGreater(result["counts"].get("normal_shots", 0) + result["counts"].get("power_shots", 0), 0)
+
+    def test_mirror_has_same_physical_crossing_and_scoring_opportunity(self):
+        right, left = run_scenario("blocker"), run_scenario("blocker", mirror=True)
+        self.assertEqual(right["first"], left["first"])
+        self.assertEqual(right["frames"], left["frames"])
+        self.assertAlmostEqual(right["crossing_clearance"], left["crossing_clearance"])
+
+    def test_cpu_cannot_save_an_unreachable_shot_by_cheating(self):
+        game = Game(rng=random.Random(8))
+        game.start_match("1P")
+        game.match.phase = MatchPhase.PLAYING
+        game.player_right.x = 250
+        game.ball = Ball(780, 460, 800, 0)
+        for _ in range(6):
+            game.update(1 / 60, RawInput())
+            if game.match.phase is not MatchPhase.PLAYING:
+                break
+        self.assertEqual(game.match.score_left, 1)
+        self.assertLess(game.player_right.x, 280)
 
 
 if __name__ == "__main__":

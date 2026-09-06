@@ -16,9 +16,9 @@ captures a handful of frames through the real render path
 writes them plus ``manifest.json`` to ``assets/preview/``.
 
 The captured window is a **time-lapse**, not a straight recording: it
-spans ``WINDOW_TICKS`` of simulated gameplay (roughly three rallies --
-enough for the ball to travel to both goals, not just huddle around
-kickoff), but only ``FRAME_COUNT`` frames are actually sampled from it,
+spans ``WINDOW_TICKS`` of simulated gameplay (an opening rally and its
+restart, rather than just a huddle around kickoff), but only
+``FRAME_COUNT`` frames are actually sampled from it,
 evenly spaced through the whole window rather than consecutive ticks
 (see ``STRIDE_TICKS`` below). The output ``fps`` in the manifest is a
 separate, independent choice -- how fast the *card* plays the sampled
@@ -51,6 +51,7 @@ status`` clean:
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import random
@@ -58,6 +59,7 @@ import sys
 from pathlib import Path
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame  # noqa: E402
 
@@ -67,6 +69,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from headscotter import config, render  # noqa: E402
 from headscotter.game import Game, GameState  # noqa: E402
 from headscotter.input import RawInput  # noqa: E402
+from headscotter.match import MatchPhase  # noqa: E402
 
 # --- Tunables -----------------------------------------------------------------
 # A build-time tool, not a runtime setting -- deliberately kept here rather
@@ -76,25 +79,22 @@ SIM_HZ = 60
 DT = 1.0 / SIM_HZ
 
 # Chosen by tracing this exact seed's demo. These tick numbers are
-# re-traced after any change that shifts bodies' exact trajectories
-# frame to frame (physics, CPU behaviour, or balance constants) rather
-# than assumed stable -- most recently after a full ball-physics
-# rebalancing pass (bouncier/floatier ball, a real body collider fixing
-# the ball passing through a player, and retuned CPU/kick constants):
-# the livelier ball resolves its opening rally considerably faster than
-# the previous, heavier-feeling ball did. This time-lapses one whole
+# re-traced after the tactical opponent update (intercepts, physical
+# crossings, headers and existing normal/power shots). Human/game-wide
+# gravity, restitution, jump geometry and actions remain unchanged.
+# This time-lapses one whole
 # kickoff-to-kickoff cycle rather than sampling it tick-for-tick -- see
 # the module docstring:
 #
 #   tick   0 : KICKOFF, ball at center (the window's opening frame)
-#   tick  71 : PLAYING begins -- the opening rally
-#   tick 241 : GOAL (score 0-1)
-#   tick 362 : KICKOFF again, ball reset to center
-#   tick 434 : PLAYING resumes -- the window's closing frame, a visual
+#   tick  72 : PLAYING begins -- the opening rally
+#   tick 456 : GOAL (score 1-0)
+#   tick 577 : KICKOFF again, ball reset to center
+#   tick 649 : PLAYING resumes -- the window's closing frame, a visual
 #              near-match for its own opening frame so the loop-back
 #              reads as another kickoff rather than a jump to a random
 #              moment.
-WINDOW_TICKS = 434
+WINDOW_TICKS = 649
 
 FPS = 12  # independent of how the window was sampled -- see module docstring
 # 20 frames, evenly sampled across the whole WINDOW_TICKS span (not
@@ -109,7 +109,7 @@ OUT_DIR = REPO_ROOT / "assets" / "preview"
 
 def _render_clean_frame(screen, game: Game) -> None:
     """Render one frame via the real render path, but as ordinary
-    gameplay: no "DEMO" / "PRESS START TO PLAY" overlay. That overlay is
+    gameplay: no "DEMO" / menu-wake overlay. That overlay is
     useful in-game (it tells a visitor this isn't a stuck real match) but
     would be redundant clutter inside a launcher card that already names
     the game and only ever shows the play area."""
@@ -121,9 +121,78 @@ def _render_clean_frame(screen, game: Game) -> None:
         game.state = real_state
 
 
+def capture_ui(screen, out_dir: Path) -> None:
+    """Bounded UI review via real states/inputs; no source art or scores written.
+
+    Laptop frames are offscreen letterboxing checks, not a hardware display test.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    captures = []
+
+    def capture(name, game):
+        render.draw_frame(screen, game)
+        image = screen.copy()
+        captures.append((name, image))
+        path = out_dir / f"headscotter-refinement-{name}.png"
+        pygame.image.save(image, str(path))
+        laptop = pygame.Surface((1920, 1080))
+        laptop.fill((0, 0, 0))
+        laptop.blit(pygame.transform.scale(image, (1440, 1080)), (240, 0))
+        pygame.image.save(laptop, str(out_dir / f"headscotter-refinement-{name}-laptop.png"))
+        print(path)
+
+    for cabinet in (False, True):
+        suffix = "cabinet" if cabinet else "keyboard"
+        game = Game(rng=random.Random(SEED))
+        if cabinet:
+            game.joysticks[0] = object()  # presentation flag only; never polled
+        game.attract_clock = 1.0
+        capture(f"main-{suffix}", game)
+        game.state = GameState.HOW_TO_PLAY
+        capture(f"help-{suffix}", game)
+        game.start_match("2P")
+        game.match.phase = MatchPhase.PLAYING
+        held = RawInput(buttons_by_device=(frozenset({1}), frozenset({1}))) if cabinet else RawInput(
+            pressed_keys=frozenset({"c", "right shift"})
+        )
+        for _ in range(24):
+            game.update(DT, held)
+        if not cabinet:
+            capture("live-charge", game)
+        back = RawInput(buttons_by_device=(frozenset({0}), frozenset())) if cabinet else RawInput(
+            pressed_keys=frozenset({"escape"})
+        )
+        game.update(DT, back)
+        capture(f"pause-{suffix}", game)
+        # 2P result cannot write the persisted 1P record.
+        game.match.score_left, game.match.score_right = 3, 2
+        game.match.phase = MatchPhase.FULL_TIME
+        game._enter_result()
+        capture(f"result-{suffix}", game)
+
+    # One full-resolution batch sheet for the bounded visual inspection.
+    sheet = pygame.Surface((2400, 3 * 630))
+    sheet.fill((14, 20, 34))
+    font = pygame.font.Font(None, 22)
+    for index, (name, image) in enumerate(captures):
+        x, y = (index % 3) * 800, (index // 3) * 630
+        sheet.blit(font.render(name, True, (255, 210, 90)), (x + 16, y + 5))
+        sheet.blit(image, (x, y + 30))
+    path = out_dir / "headscotter-refinement-ui-batch.png"
+    pygame.image.save(sheet, str(path))
+    print(path)
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ui-output", type=Path, help="capture UI states here instead of regenerating the preview")
+    args = parser.parse_args()
     pygame.init()
     screen = pygame.display.set_mode((config.SCREEN_WIDTH, config.SCREEN_HEIGHT))
+
+    if args.ui_output is not None:
+        capture_ui(screen, args.ui_output)
+        return 0
 
     game = Game(rng=random.Random(SEED))
     game._enter_demo()

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Callable, Optional, Tuple
 
 from . import config, physics
 from .physics import Ball
@@ -29,9 +29,9 @@ class Player:
     facing: int = 1              # +1 faces right, -1 faces left
     on_ground: bool = True
     moving: bool = False
-    kick_cooldown: float = 0.0
+    kick_cooldown: float = 0.0  # power-shot recovery only; never blocks normal kicks
     #: Seconds the kick control has been held continuously this charge --
-    #: see :func:`update_kick`. Reset to 0 the instant it is released
+    #: see :func:`update_power_shot`. Reset to 0 the instant it is released
     #: (whether or not that release fired a shot) or while on cooldown.
     kick_charge: float = 0.0
     #: Counts down after any kick (normal or power) fires, purely so
@@ -116,7 +116,7 @@ def step_player_physics(player: Player, dt: float) -> None:
 
 def update_player(player: Player, dt: float, move: int, jump_pressed: bool) -> None:
     """The full per-frame update for one player's own body, excluding the
-    ball interactions (see :func:`update_kick` / :func:`apply_head_collision`,
+    ball interactions (see :func:`normal_kick` / :func:`apply_head_collision`,
     called separately once both players have moved)."""
     apply_move(player, move, dt)
     if jump_pressed:
@@ -194,7 +194,7 @@ def separate_players(a: Player, b: Player) -> bool:
 
 
 class KickResult:
-    """Result of a single call to :func:`update_kick`. Deliberately a
+    """Result of a normal attempt or power release. Deliberately a
     small explicit object rather than a bare bool -- ``bool(result)`` is
     NOT meaningful; check ``.fired`` -- so a caller can't accidentally
     treat "a kick object exists" as "a kick fired"."""
@@ -209,8 +209,34 @@ class KickResult:
         return f"KickResult(fired={self.fired}, is_power_shot={self.is_power_shot})"
 
 
-def update_kick(player: Player, ball: Ball, kick_held: bool, dt: float) -> KickResult:
-    """Charge-and-release kicking: holding the kick control charges a
+def normal_kick(player: Player, ball: Ball) -> KickResult:
+    """One fresh press = one attempt, including a visible whiff.
+
+    The caller owns press edges. No release or power recovery is involved.
+    """
+    player.kick_pose_timer = config.KICK_POSE_HOLD_SECONDS
+    return _strike(player, ball, 0.0)
+
+
+def _strike(player: Player, ball: Ball, fraction: float) -> KickResult:
+    box_cx = player.x + player.facing * (config.KICK_RANGE_X * 0.5)
+    box_cy = player.y - (config.KICK_RANGE_Y * 0.5)
+    if abs(ball.x - box_cx) > config.KICK_RANGE_X or abs(ball.y - box_cy) > config.KICK_RANGE_Y:
+        return KickResult(fired=False)
+
+    speed = config.KICK_IMPULSE_SPEED + (config.POWER_SHOT_IMPULSE_SPEED - config.KICK_IMPULSE_SPEED) * fraction
+    angle_deg = config.KICK_LAUNCH_ANGLE_DEG + (
+        config.POWER_SHOT_LAUNCH_ANGLE_DEG - config.KICK_LAUNCH_ANGLE_DEG
+    ) * fraction
+    angle = math.radians(angle_deg)
+    ball.vx = player.facing * speed * math.cos(angle)
+    ball.vy = -speed * math.sin(angle)
+    physics._cap_speed(ball)
+    return KickResult(fired=True, is_power_shot=fraction >= 0.5)
+
+
+def update_power_shot(player: Player, ball: Ball, power_held: bool, dt: float) -> KickResult:
+    """Charge-and-release power shot: holding the separate power control charges a
     power shot (see config.POWER_SHOT_*); releasing it fires, with the
     strength interpolated continuously from an ordinary kick (an
     immediate tap-and-release, near-zero charge) up to a full power shot
@@ -223,7 +249,7 @@ def update_kick(player: Player, ball: Ball, kick_held: bool, dt: float) -> KickR
     the passive header/body bounce in :func:`apply_head_collision` /
     :func:`apply_body_collision`, which happen regardless of any button.
     """
-    if kick_held:
+    if power_held:
         if player.kick_cooldown <= 0.0:
             player.kick_charge = min(config.POWER_SHOT_CHARGE_SECONDS, player.kick_charge + dt)
         return KickResult(fired=False)
@@ -233,27 +259,17 @@ def update_kick(player: Player, ball: Ball, kick_held: bool, dt: float) -> KickR
     if charge <= 0.0 or player.kick_cooldown > 0.0:
         return KickResult(fired=False)
 
-    box_cx = player.x + player.facing * (config.KICK_RANGE_X * 0.5)
-    box_cy = player.y - (config.KICK_RANGE_Y * 0.5)
-    if abs(ball.x - box_cx) > config.KICK_RANGE_X or abs(ball.y - box_cy) > config.KICK_RANGE_Y:
-        return KickResult(fired=False)
-
     fraction = physics.clamp(charge / config.POWER_SHOT_CHARGE_SECONDS, 0.0, 1.0)
-    speed = config.KICK_IMPULSE_SPEED + (config.POWER_SHOT_IMPULSE_SPEED - config.KICK_IMPULSE_SPEED) * fraction
-    angle_deg = (
-        config.KICK_LAUNCH_ANGLE_DEG
-        + (config.POWER_SHOT_LAUNCH_ANGLE_DEG - config.KICK_LAUNCH_ANGLE_DEG) * fraction
-    )
-    angle = math.radians(angle_deg)
-    ball.vx = player.facing * speed * math.cos(angle)
-    ball.vy = -speed * math.sin(angle)
-
-    player.kick_cooldown = config.KICK_COOLDOWN_SECONDS + config.POWER_SHOT_COOLDOWN_BONUS_SECONDS * fraction
     player.kick_pose_timer = config.KICK_POSE_HOLD_SECONDS
-    return KickResult(fired=True, is_power_shot=fraction >= 0.5)
+    result = _strike(player, ball, fraction)
+    if result.fired:
+        player.kick_cooldown = config.KICK_COOLDOWN_SECONDS + config.POWER_SHOT_COOLDOWN_BONUS_SECONDS * fraction
+    return result
 
 
-def apply_head_collision(player: Player, ball: Ball) -> bool:
+def apply_head_collision(
+    player: Player, ball: Ball, on_impact: Optional[Callable[[], None]] = None
+) -> bool:
     """The passive header bounce: the ball rebounds off the player's head
     circle whenever they overlap, whether or not a kick was pressed."""
     hx, hy = player.head_center
@@ -264,6 +280,9 @@ def apply_head_collision(player: Player, ball: Ball) -> bool:
         config.HEAD_RADIUS,
         config.BALL_RESTITUTION_HEAD,
         extra_lift=config.HEADER_LIFT,
+        on_impact=on_impact,
+        contact_id=f"head:{player.sprite_key}",
+        collider_velocity=(config.PLAYER_SPEED * player.facing if player.moving else 0.0, player.vy),
     )
 
 

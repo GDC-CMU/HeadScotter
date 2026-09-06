@@ -10,11 +10,11 @@ supplies real sound.
 Audio is entirely optional and must never be able to break the game:
 
 - :func:`init` attempts to bring up ``pygame.mixer``; if that fails for
-  any reason (no audio device, a headless CI box, an unsupported driver)
+  an expected device/driver error (no audio device, a headless CI box)
   it prints one warning to stderr and leaves audio disabled -- the
   cabinet must never fail to boot a game because of audio.
 - :func:`play` is a no-op whenever audio isn't enabled, the name is
-  unknown, or the individual sound fails to load/play for any reason.
+  unknown, or the individual sound fails to load/play.
 - :func:`init` is only ever called from :meth:`headscotter.game.Game.
   init_display` (the real, pygame-backed startup path used by
   ``main.py``). Headless tests and the build-time preview/placeholder
@@ -51,8 +51,7 @@ _warned: Set[str] = set()
 
 def init() -> None:
     """Attempt to bring up the mixer. Safe to call more than once (a
-    no-op if already enabled); never raises. Audio stays disabled (the
-    default) on any failure."""
+    no-op if already enabled). Audio stays disabled on device/driver errors."""
     global _enabled
     if _enabled:
         return
@@ -60,7 +59,7 @@ def init() -> None:
         if not pygame.mixer.get_init():
             pygame.mixer.init()
         _enabled = True
-    except Exception as exc:  # pragma: no cover - depends on host audio hardware
+    except (pygame.error, OSError) as exc:
         print(f"headscotter: audio disabled ({exc})", file=sys.stderr)
         _enabled = False
 
@@ -72,7 +71,7 @@ def is_enabled() -> bool:
 def play(name: str) -> None:
     """Play a named sound effect once, fire-and-forget. A no-op if audio
     isn't enabled, ``name`` isn't declared in :data:`SOUND_SPECS`, or
-    anything at all goes wrong loading/playing it -- a missing or
+    an expected error occurs loading/playing it -- a missing or
     corrupt sound file must never crash or stall the game, exactly like
     a missing sprite in :mod:`headscotter.assets`."""
     if not _enabled:
@@ -86,7 +85,7 @@ def play(name: str) -> None:
             sound = pygame.mixer.Sound(str(path))
             _cache[name] = sound
         sound.play()
-    except Exception as exc:  # pragma: no cover - defensive; see module docstring
+    except (pygame.error, OSError) as exc:
         if name not in _warned:
             print(f"headscotter: could not play sound '{name}' ({exc})", file=sys.stderr)
             _warned.add(name)

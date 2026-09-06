@@ -72,15 +72,12 @@ class JumpAndGravityTests(unittest.TestCase):
 
 
 class KickTests(unittest.TestCase):
-    """Kicking is charge-and-release (players.update_kick): a `tap`
-    (held for one frame then released) fires an ordinary kick almost
-    immediately, exactly like the old instant-press try_kick did."""
+    """Normal press attempts and separate power-shot holds/releases."""
 
     DT = 1 / 60.0
 
     def _tap_kick(self, player, ball):
-        players.update_kick(player, ball, kick_held=True, dt=self.DT)
-        return players.update_kick(player, ball, kick_held=False, dt=self.DT)
+        return players.normal_kick(player, ball)
 
     def test_kick_launches_the_ball_in_the_facing_direction(self):
         player = players.new_player(config.PITCH_CENTER_X, facing=1)
@@ -103,26 +100,29 @@ class KickTests(unittest.TestCase):
         result = self._tap_kick(player, ball)
         self.assertFalse(result.fired)
         self.assertEqual((ball.vx, ball.vy), (0.0, 0.0))
+        self.assertTrue(player.just_kicked)
 
-    def test_kick_respects_cooldown(self):
+    def test_normal_kicks_repeat_without_waiting_for_power_recovery(self):
         player = players.new_player(config.PITCH_CENTER_X, facing=1)
         ball = Ball(x=player.x + 10, y=player.y - 40, vx=0.0, vy=0.0)
         self._tap_kick(player, ball)
+        player.kick_cooldown = 0.9
         ball2 = Ball(x=player.x + 10, y=player.y - 40, vx=0.0, vy=0.0)
         result_again = self._tap_kick(player, ball2)
-        self.assertFalse(result_again.fired)
+        self.assertTrue(result_again.fired)
+        self.assertEqual(player.kick_cooldown, 0.9)
 
     def test_no_kick_without_the_button(self):
         player = players.new_player(config.PITCH_CENTER_X, facing=1)
         ball = Ball(x=player.x + 10, y=player.y - 40, vx=0.0, vy=0.0)
-        result = players.update_kick(player, ball, kick_held=False, dt=self.DT)
+        result = players.update_power_shot(player, ball, power_held=False, dt=self.DT)
         self.assertFalse(result.fired)
 
     def test_holding_the_button_charges_but_does_not_fire(self):
         player = players.new_player(config.PITCH_CENTER_X, facing=1)
         ball = Ball(x=player.x + 10, y=player.y - 40, vx=0.0, vy=0.0)
         for _ in range(10):
-            result = players.update_kick(player, ball, kick_held=True, dt=self.DT)
+            result = players.update_power_shot(player, ball, power_held=True, dt=self.DT)
             self.assertFalse(result.fired)
         self.assertGreater(player.kick_charge, 0.0)
         self.assertEqual((ball.vx, ball.vy), (0.0, 0.0))  # untouched while still held
@@ -132,8 +132,8 @@ class KickTests(unittest.TestCase):
         ball = Ball(x=player.x + 10, y=player.y - 40, vx=0.0, vy=0.0)
         steps = int(config.POWER_SHOT_CHARGE_SECONDS / self.DT) + 2
         for _ in range(steps):
-            players.update_kick(player, ball, kick_held=True, dt=self.DT)
-        result = players.update_kick(player, ball, kick_held=False, dt=self.DT)
+            players.update_power_shot(player, ball, power_held=True, dt=self.DT)
+        result = players.update_power_shot(player, ball, power_held=False, dt=self.DT)
         self.assertTrue(result.fired)
         self.assertTrue(result.is_power_shot)
         speed = math.hypot(ball.vx, ball.vy)
@@ -148,10 +148,23 @@ class KickTests(unittest.TestCase):
         player = players.new_player(config.PITCH_CENTER_X, facing=1)
         ball = Ball(x=player.x + 500, y=player.y, vx=0.0, vy=0.0)
         for _ in range(10):
-            players.update_kick(player, ball, kick_held=True, dt=self.DT)
-        result = players.update_kick(player, ball, kick_held=False, dt=self.DT)
+            players.update_power_shot(player, ball, power_held=True, dt=self.DT)
+        result = players.update_power_shot(player, ball, power_held=False, dt=self.DT)
         self.assertFalse(result.fired)
         self.assertEqual(player.kick_charge, 0.0)
+
+    def test_power_recovery_blocks_power_but_not_normal_or_charge_state(self):
+        player = players.new_player(400, facing=1)
+        ball = Ball(420, player.y - 40)
+        players.update_power_shot(player, ball, True, config.POWER_SHOT_CHARGE_SECONDS)
+        self.assertTrue(players.update_power_shot(player, ball, False, self.DT).is_power_shot)
+        recovery = player.kick_cooldown
+        for _ in range(5):
+            self.assertTrue(players.normal_kick(player, ball).fired)
+            self.assertFalse(players.update_power_shot(player, ball, True, self.DT).fired)
+        self.assertEqual(player.kick_charge, 0.0)
+        self.assertEqual(player.kick_cooldown, recovery)
+        self.assertLessEqual(ball.speed(), config.BALL_MAX_SPEED)
 
 
 class HeadCollisionTests(unittest.TestCase):
@@ -230,8 +243,7 @@ class NeverPermanentlyStuckTests(unittest.TestCase):
         self.assertEqual((ball.vx, ball.vy), (0.0, 0.0))
 
         player = players.new_player(ball.x - 20, facing=1)
-        players.update_kick(player, ball, kick_held=True, dt=1 / 60.0)
-        result = players.update_kick(player, ball, kick_held=False, dt=1 / 60.0)
+        result = players.normal_kick(player, ball)
         self.assertTrue(result.fired)
         self.assertNotEqual((ball.vx, ball.vy), (0.0, 0.0))
 

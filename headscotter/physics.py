@@ -8,7 +8,7 @@ so it has no :mod:`pygame` import and is fully unit-testable headless.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple
 
 from . import config
@@ -30,6 +30,9 @@ class Ball:
     vx: float = 0.0
     vy: float = 0.0
     radius: float = config.BALL_RADIUS
+    # Audio contact episodes, not an audio timer. Cleared by actual separation,
+    # so substep corrections cannot replay an impact, but a new hit can.
+    impact_contacts: set[str] = field(default_factory=set, repr=False)
 
     @property
     def pos(self) -> Tuple[float, float]:
@@ -50,6 +53,18 @@ def _cap_speed(ball: Ball) -> None:
         scale = config.BALL_MAX_SPEED / speed
         ball.vx *= scale
         ball.vy *= scale
+
+
+def _impact(ball: Ball, contact: str, incoming_speed: float) -> bool:
+    """Record contact, reporting only a new, meaningful incoming impact."""
+    new_contact = contact not in ball.impact_contacts
+    ball.impact_contacts.add(contact)
+    return new_contact and incoming_speed > config.BALL_MIN_BOUNCE_SPEED
+
+
+def _release_contact(ball: Ball, contact: str, gap: float) -> None:
+    if gap > 1e-6:
+        ball.impact_contacts.discard(contact)
 
 
 def step_ball(ball: Ball, dt: float, on_bounce: Optional[Callable[[str], None]] = None) -> Optional[str]:
@@ -74,7 +89,7 @@ def step_ball(ball: Ball, dt: float, on_bounce: Optional[Callable[[str], None]] 
     implementations' goal detection is.
 
     ``on_bounce``, if given, is called with ``"ceiling"``, ``"ground"``,
-    or ``"wall"`` exactly when that surface is actually hit this call --
+    or ``"wall"`` on a new incoming impact above the settling threshold --
     purely a notification hook (e.g. for a sound effect); it never
     affects the physics and defaults to doing nothing.
 
@@ -83,6 +98,11 @@ def step_ball(ball: Ball, dt: float, on_bounce: Optional[Callable[[str], None]] 
     so it can never wedge into a wall or permanently leave the pitch --
     any kick or header can always move it again from wherever it lands.
     """
+    _release_contact(ball, "ground", config.GROUND_Y - ball.y - ball.radius)
+    _release_contact(ball, "ceiling", ball.y - ball.radius - config.PITCH_TOP)
+    _release_contact(ball, "left_wall", ball.x - ball.radius - config.PITCH_LEFT)
+    _release_contact(ball, "right_wall", config.PITCH_RIGHT - ball.x - ball.radius)
+    supported = ball.y + ball.radius >= config.GROUND_Y - 1e-6 and ball.vy == 0.0
     ball.vy = apply_gravity(ball.vy, dt, config.BALL_GRAVITY)
     # Gentle air resistance: only horizontal speed decays in flight, so a
     # kicked ball's arc still looks governed by gravity, not a wind machine.
@@ -94,30 +114,36 @@ def step_ball(ball: Ball, dt: float, on_bounce: Optional[Callable[[str], None]] 
 
     # Ceiling.
     if ball.y - ball.radius < config.PITCH_TOP:
+        impact = _impact(ball, "ceiling", -ball.vy)
         ball.y = config.PITCH_TOP + ball.radius
         ball.vy = abs(ball.vy) * config.BALL_RESTITUTION_WALL
-        if on_bounce is not None:
+        if impact and on_bounce is not None:
             on_bounce("ceiling")
 
     # Ground: bounce, then bleed off horizontal speed via rolling friction.
     if ball.y + ball.radius > config.GROUND_Y:
+        impact = _impact(ball, "ground", 0.0 if supported else ball.vy)
         ball.y = config.GROUND_Y - ball.radius
         bounced_vy = -ball.vy * config.BALL_RESTITUTION_GROUND
-        ball.vy = bounced_vy if abs(bounced_vy) > config.BALL_MIN_BOUNCE_SPEED else 0.0
+        if supported:
+            ball.vy = 0.0  # gravity against support is not a fresh drop
+        elif ball.vy > 0.0:
+            ball.vy = bounced_vy if abs(bounced_vy) > config.BALL_MIN_BOUNCE_SPEED else 0.0
         friction = config.BALL_GROUND_FRICTION_PER_SEC * dt
         if abs(ball.vx) <= friction:
             ball.vx = 0.0
         else:
             ball.vx -= friction * (1.0 if ball.vx > 0 else -1.0)
-        if on_bounce is not None:
+        if impact and on_bounce is not None:
             on_bounce("ground")
 
     # Left side: solid post above the crossbar, open goal mouth below it.
     if ball.x - ball.radius < config.PITCH_LEFT:
         if ball.y + ball.radius <= config.CROSSBAR_Y:
+            impact = _impact(ball, "left_wall", -ball.vx)
             ball.x = config.PITCH_LEFT + ball.radius
             ball.vx = abs(ball.vx) * config.BALL_RESTITUTION_WALL
-            if on_bounce is not None:
+            if impact and on_bounce is not None:
                 on_bounce("wall")
         elif ball.x <= config.PITCH_LEFT:
             event = "left_goal"
@@ -125,9 +151,10 @@ def step_ball(ball: Ball, dt: float, on_bounce: Optional[Callable[[str], None]] 
     # Right side, mirrored.
     if ball.x + ball.radius > config.PITCH_RIGHT:
         if ball.y + ball.radius <= config.CROSSBAR_Y:
+            impact = _impact(ball, "right_wall", ball.vx)
             ball.x = config.PITCH_RIGHT - ball.radius
             ball.vx = -abs(ball.vx) * config.BALL_RESTITUTION_WALL
-            if on_bounce is not None:
+            if impact and on_bounce is not None:
                 on_bounce("wall")
         elif ball.x >= config.PITCH_RIGHT:
             event = "right_goal"
@@ -143,12 +170,18 @@ def resolve_circle_collision(
     radius: float,
     restitution: float,
     extra_lift: float = 0.0,
+    on_impact: Optional[Callable[[], None]] = None,
+    contact_id: str = "head",
+    collider_velocity: Tuple[float, float] = (0.0, 0.0),
 ) -> bool:
     """Push the ball out of, and elastically bounce it off, a static
     circle (e.g. a player's head) at ``(cx, cy)`` with the given
     ``radius``. Returns True if a collision was present and resolved.
 
-    ``extra_lift`` is added to the outgoing vertical velocity afterward
+    ``extra_lift`` is added after a meaningful incoming hit, never support.
+    ``collider_velocity`` supplies relative normal evidence for sound only;
+    collision response keeps its existing static-collider restitution.
+    Extra lift biases the outgoing vertical velocity
     (a small negative bias makes headers arc upward instead of dribbling
     flatly off the collider).
     """
@@ -156,6 +189,7 @@ def resolve_circle_collision(
     dy = ball.y - cy
     dist = math.hypot(dx, dy)
     min_dist = ball.radius + radius
+    _release_contact(ball, contact_id, dist - min_dist)
     if dist >= min_dist:
         return False
 
@@ -171,14 +205,18 @@ def resolve_circle_collision(
     ball.y += ny * overlap
 
     speed_into_surface = ball.vx * nx + ball.vy * ny
+    relative_normal = speed_into_surface - collider_velocity[0] * nx - collider_velocity[1] * ny
+    impact = _impact(ball, contact_id, -relative_normal)
     if speed_into_surface < 0:
         ball.vx -= (1.0 + restitution) * speed_into_surface * nx
         ball.vy -= (1.0 + restitution) * speed_into_surface * ny
-        # Only a genuine impact (moving into the collider) gets the extra
-        # lift -- otherwise a ball merely resting against a head would be
-        # nudged upward every single frame with nothing to explain it.
-        ball.vy -= extra_lift
+        # Gravity against head support is not a new header. Giving those
+        # tiny corrections extra lift manufactured a repeating bounce cycle.
+        if speed_into_surface < -config.BALL_MIN_BOUNCE_SPEED:
+            ball.vy -= extra_lift
     _cap_speed(ball)
+    if impact and on_impact is not None:
+        on_impact()
     return True
 
 

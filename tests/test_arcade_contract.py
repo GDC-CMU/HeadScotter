@@ -3,7 +3,7 @@
 - The display must be exactly 800x600.
 - P1 (button 5), Esc, Backspace, and button B are all aliases of a
   single "go back one level" action: from the main menu it exits via
-  ``sys.exit(0)``; from every other state it returns to the main menu.
+  ``sys.exit(0)``; live matches pause/resume; other screens return one level.
 - A button already held at startup (the gallery hand-off) must not
   instantly start a match or quit.
 - Attract mode starts after 15s idle, any input exits it, it re-arms,
@@ -13,10 +13,12 @@
 from __future__ import annotations
 
 import os
+import copy
 import random
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
@@ -26,6 +28,7 @@ from headscotter import config  # noqa: E402
 from headscotter import match as match_mod  # noqa: E402
 from headscotter.game import Game, GameState  # noqa: E402
 from headscotter.input import RawInput  # noqa: E402
+from headscotter import players, physics  # noqa: E402
 
 
 class DisplayContractTests(unittest.TestCase):
@@ -49,10 +52,7 @@ class DisplayContractTests(unittest.TestCase):
 
 
 class BackOneLevelContractTests(unittest.TestCase):
-    """P1/Esc/Backspace/B are equivalent everywhere: from the main menu
-    they exit to the gallery; from every other state they return to the
-    main menu. No reachable state may trap a visitor -- repeated presses
-    always eventually reach process exit."""
+    """Back pauses/resumes matches; other screens keep one-level navigation."""
 
     def test_p1_from_the_main_menu_exits_with_code_zero(self):
         game = Game(rng=random.Random(0))
@@ -65,7 +65,7 @@ class BackOneLevelContractTests(unittest.TestCase):
     def test_p1_from_every_other_state_returns_to_the_menu_not_exit(self):
         raw = RawInput(pressed_buttons=frozenset({config.BUTTON_P1}))
         for state in GameState:
-            if state is GameState.ATTRACT:
+            if state in (GameState.ATTRACT, GameState.MATCH, GameState.PAUSED):
                 continue
             with self.subTest(state=state):
                 game = Game(rng=random.Random(0))
@@ -98,7 +98,7 @@ class BackOneLevelContractTests(unittest.TestCase):
             game2.maybe_go_back(raw)
         except SystemExit:
             self.fail("Esc exited the process directly from MATCH")
-        self.assertEqual(game2.state, GameState.ATTRACT)
+        self.assertEqual(game2.state, GameState.PAUSED)
 
     def test_button_b_also_mirrors_p1(self):
         raw = RawInput(pressed_buttons=frozenset({config.BUTTON_B}))
@@ -119,6 +119,8 @@ class BackOneLevelContractTests(unittest.TestCase):
         press = RawInput(pressed_buttons=frozenset({config.BUTTON_P1}))
         release = RawInput()
         for state in GameState:
+            if state in (GameState.MATCH, GameState.PAUSED):
+                continue  # explicit Main Menu choice now abandons a live run
             with self.subTest(state=state):
                 game = Game(rng=random.Random(0))
                 if state is GameState.DEMO:
@@ -387,14 +389,298 @@ class HeadlessStabilityTests(unittest.TestCase):
             game = Game(rng=random.Random(1))
             if state is GameState.DEMO:
                 game._enter_demo()
-            elif state in (GameState.MATCH, GameState.RESULT):
+            elif state in (GameState.MATCH, GameState.PAUSED, GameState.RESULT):
                 game.start_match("1P")
+                if state is GameState.PAUSED:
+                    game.state = state
                 if state is GameState.RESULT:
                     game.match.score_left = 2
                     game._enter_result()
             else:
                 game.state = state
             render.draw_frame(screen, game)  # must not raise
+
+
+class LiveActionContractTests(unittest.TestCase):
+    def live_game(self, mode="2P"):
+        game = Game(rng=random.Random(5))
+        game.start_match(mode)
+        game.match.phase = match_mod.MatchPhase.PLAYING
+        return game
+
+    def test_rapid_normal_presses_fire_in_same_live_update_for_both_keyboards(self):
+        for key, side in (("x", "left"), ("s", "left"), ("down", "right"), ("/", "right")):
+            game = self.live_game()
+            player = getattr(game, f"player_{side}")
+            player.kick_cooldown = 0.9
+            with patch("headscotter.players.normal_kick", wraps=players.normal_kick) as kick:
+                for _ in range(5):
+                    game.ball = physics.Ball(player.x + player.facing * 40, player.y - 10)
+                    game.update(1 / 60, RawInput(pressed_keys=frozenset({key})))
+                    self.assertNotEqual(game.ball.vx, 0)
+                    self.assertTrue(player.just_kicked)
+                    game.update(1 / 60, RawInput())
+                self.assertEqual(kick.call_count, 5)
+            self.assertGreater(player.kick_cooldown, 0)
+            self.assertLess(game.match.time_remaining, config.MATCH_SECONDS)
+
+    def test_polled_quick_taps_on_both_controllers_and_keyboard_are_not_lost(self):
+        for mode in ("1P", "2P"):
+            game = self.live_game(mode)
+            game.cpu_right = None  # only human requests counted by this probe
+            game._joystick_order = [40, 99]
+            events = []
+            for _ in range(3):
+                for iid in (40, 99):
+                    events += [
+                        pygame.event.Event(pygame.JOYBUTTONDOWN, instance_id=iid, button=2),
+                        pygame.event.Event(pygame.JOYBUTTONUP, instance_id=iid, button=2),
+                    ]
+                events += [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_x),
+                           pygame.event.Event(pygame.KEYUP, key=pygame.K_x)]
+            with patch("pygame.event.get", return_value=events):
+                raw = game.poll_hardware()
+            self.assertEqual(raw.buttons_by_device, (frozenset(), frozenset()))
+            self.assertEqual(raw.button_downs_by_device, ((2, 2, 2), (2, 2, 2)))
+            with patch("headscotter.players.normal_kick", wraps=players.normal_kick) as kick:
+                game.update(1 / 60, raw)
+                self.assertEqual(kick.call_count, 9)
+                left_calls = sum(call.args[0] is game.player_left for call in kick.call_args_list)
+                self.assertEqual(left_calls, 9 if mode == "1P" else 6)
+            self.assertLess(game.match.time_remaining, config.MATCH_SECONDS)
+
+    def test_held_x_and_key_repeat_do_not_repeat_per_frame_or_substep(self):
+        game = self.live_game()
+        events = [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_x)] * 3
+        with patch("pygame.event.get", return_value=events):
+            raw = game.poll_hardware()
+        self.assertEqual(raw.key_downs, ("x",))
+        game.ball.vx = config.BALL_MAX_SPEED
+        with patch("headscotter.players.normal_kick", wraps=players.normal_kick) as kick:
+            game.update(0.1, raw)  # multiple ball substeps
+            for _ in range(4):
+                game.update(1 / 60, RawInput(pressed_keys=frozenset({"x"})))
+            self.assertEqual(kick.call_count, 1)
+
+    def test_each_controller_can_strike_repeatedly_during_power_recovery(self):
+        for device in (0, 1):
+            game = self.live_game()
+            player = game.player_left if device == 0 else game.player_right
+            player.kick_cooldown = 0.9
+            buttons = [frozenset(), frozenset()]
+            buttons[device] = frozenset({2})
+            with patch("headscotter.audio.play") as play:
+                for _ in range(5):
+                    game.ball = physics.Ball(player.x + player.facing * 40, player.y - 10)
+                    game.update(1 / 60, RawInput(buttons_by_device=tuple(buttons)))
+                    self.assertGreater(game.ball.vx * player.facing, 0)
+                    game.update(1 / 60, RawInput())
+                self.assertEqual(sum(call.args == ("kick",) for call in play.call_args_list), 5)
+            self.assertGreater(player.kick_cooldown, 0)
+
+    def test_power_charge_release_and_jump_are_separate_for_both_players(self):
+        game = self.live_game()
+        held = RawInput(buttons_by_device=(frozenset({1}), frozenset({1})))
+        for _ in range(10):
+            game.update(1 / 60, held)
+        self.assertGreater(game.player_left.kick_charge, 0)
+        self.assertGreater(game.player_right.kick_charge, 0)
+        self.assertTrue(game.player_left.on_ground)
+        self.assertFalse(game.player_left.just_kicked)
+        with patch("headscotter.players.update_power_shot", wraps=players.update_power_shot) as power:
+            game.update(1 / 60, RawInput(buttons_by_device=(frozenset({3}), frozenset({3}))))
+            self.assertEqual(power.call_count, 2)
+        self.assertFalse(game.player_left.on_ground)
+        self.assertFalse(game.player_right.on_ground)
+        self.assertEqual(game.player_left.kick_charge, 0)
+
+    def test_release_then_repress_power_in_one_poll_releases_original_charge(self):
+        game = self.live_game()
+        player = game.player_left
+        game.update(0.2, RawInput(pressed_keys=frozenset({"c"})))
+        game.ball = physics.Ball(player.x + 40, player.y - 10)
+        # A fresh down while the source was previously held proves an intervening up.
+        game.update(1 / 60, RawInput(pressed_keys=frozenset({"c"}), key_downs=("c",)))
+        self.assertGreater(game.ball.vx, 0)
+        self.assertGreater(player.kick_cooldown, 0)
+        self.assertEqual(player.kick_charge, 0)
+
+
+class PauseContractTests(unittest.TestCase):
+    DT = 1 / 60
+
+    def snapshot(self, game):
+        return copy.deepcopy((
+            game.match, game.ball, game.player_left, game.player_right,
+            {key: value for key, value in vars(game.cpu_right).items() if key != "rng"} if game.cpu_right else None,
+            game.rng.getstate(), game._seconds_since_goal, game._priority_swap,
+            game.anim_clock, game.attract_clock, game._menu_idle_seconds,
+        ))
+
+    def test_pause_freezes_every_phase_and_rng_then_resumes_existing_objects(self):
+        for phase in (match_mod.MatchPhase.KICKOFF, match_mod.MatchPhase.PLAYING,
+                      match_mod.MatchPhase.GOAL_CELEBRATION):
+            for device in (0, 1):
+                game = Game(rng=random.Random(8))
+                game.start_match("1P")
+                game.match.phase = match_mod.MatchPhase.PLAYING
+                game.update(self.DT, RawInput())  # genuinely advance CPU/RNG/play first
+                game.match.phase = phase
+                game.match.phase_timer = 0.15
+                game.player_left.kick_cooldown = 0.8
+                objects = (game.match, game.ball, game.player_left, game.cpu_right)
+                before = self.snapshot(game)
+                buttons = [frozenset(), frozenset()]
+                buttons[device] = frozenset({0})
+                back = RawInput(buttons_by_device=tuple(buttons))
+                game.update(self.DT, back)
+                self.assertEqual(game.state, GameState.PAUSED)
+                self.assertEqual(game.pause_index, 0)
+                for _ in range(120):
+                    game.update(0.25, back)
+                self.assertEqual(self.snapshot(game), before)
+                self.assertEqual(game.state, GameState.PAUSED)
+                game.update(self.DT, RawInput())
+                game.update(self.DT, back)
+                self.assertEqual(game.state, GameState.MATCH)
+                self.assertEqual(self.snapshot(game), before)
+                for obj, actual in zip(objects, (game.match, game.ball, game.player_left, game.cpu_right)):
+                    self.assertIs(obj, actual)
+                game.update(self.DT, RawInput())
+                self.assertNotEqual(self.snapshot(game), before)
+
+    def test_pause_cancels_charge_and_blocks_old_actions_and_held_confirm(self):
+        game = Game()
+        game.start_match("2P")
+        game.match.phase = match_mod.MatchPhase.PLAYING
+        game.update(0.2, RawInput(pressed_keys=frozenset({"c"})))
+        self.assertGreater(game.player_left.kick_charge, 0)
+        old = frozenset({"c", "w", "x", "return"})
+        game.update(self.DT, RawInput(pressed_keys=old | {"escape"}))
+        self.assertEqual(game.player_left.kick_charge, 0)
+        for _ in range(10):
+            game.update(self.DT, RawInput(pressed_keys=old))
+        self.assertEqual(game.state, GameState.PAUSED)  # held confirm cannot resume
+        game.update(self.DT, RawInput(pressed_keys=old | {"escape"}))
+        self.assertEqual(game.state, GameState.MATCH)
+        with patch("headscotter.audio.play") as play:
+            for _ in range(10):
+                game.update(self.DT, RawInput(pressed_keys=old))
+            game.update(self.DT, RawInput())  # old power release must not shoot
+            play.assert_not_called()
+        self.assertEqual(game.player_left.kick_charge, 0)
+        self.assertTrue(game.player_left.on_ground)
+        self.assertFalse(game.player_left.just_kicked)
+        game.update(self.DT, RawInput(pressed_keys=frozenset({"w", "x"})))
+        self.assertFalse(game.player_left.on_ground)
+        self.assertTrue(game.player_left.just_kicked)
+
+    def test_pause_main_menu_abandons_without_exit_or_record_then_fresh_match(self):
+        game = Game()
+        game.start_match("1P")
+        game.match.score_left = 99
+        old_match = game.match
+        game.update(self.DT, RawInput(pressed_keys=frozenset({"escape"})))
+        game.update(self.DT, RawInput())
+        with patch("headscotter.match.maybe_record_high_score") as record:
+            game.update(self.DT, RawInput(pressed_keys=frozenset({"down"})))
+            game.update(self.DT, RawInput(pressed_keys=frozenset({"return"})))
+            self.assertEqual(game.state, GameState.ATTRACT)
+            for _ in range(10):
+                game.update(self.DT, RawInput(pressed_keys=frozenset({"return"})))
+            self.assertEqual(game.state, GameState.ATTRACT)
+            record.assert_not_called()
+        game.update(self.DT, RawInput())
+        game.update(self.DT, RawInput(pressed_keys=frozenset({"return"})))
+        self.assertEqual(game.state, GameState.MATCH)
+        self.assertIsNot(game.match, old_match)
+        self.assertEqual(game.match.score_left, 0)
+
+    def test_all_back_aliases_are_release_guarded_across_pause_and_resume(self):
+        controls = [RawInput(pressed_keys=frozenset({key})) for key in ("escape", "backspace")]
+        controls += [RawInput(buttons_by_device=(frozenset(), frozenset({button}))) for button in (0, 5)]
+        for raw in controls:
+            game = Game()
+            game.start_match("2P")
+            game.update(self.DT, raw)
+            for _ in range(20):
+                game.update(self.DT, raw)
+            self.assertEqual(game.state, GameState.PAUSED)
+            game.update(self.DT, RawInput())
+            game.update(self.DT, raw)
+            for _ in range(20):
+                game.update(self.DT, raw)
+            self.assertEqual(game.state, GameState.MATCH)
+
+    def test_demo_wake_input_is_consumed_and_does_not_pause_or_start_match(self):
+        for raw in (RawInput(pressed_keys=frozenset({"escape"})),
+                    RawInput(pressed_buttons=frozenset({9})),
+                    RawInput(key_downs=("x",))):
+            game = Game()
+            game._enter_demo()
+            game.update(self.DT, raw)
+            self.assertEqual(game.state, GameState.ATTRACT)
+            for _ in range(10):
+                game.update(self.DT, raw)
+            self.assertEqual(game.state, GameState.ATTRACT)
+
+
+class MenuPresentationTests(unittest.TestCase):
+    def setUp(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((800, 600))
+
+    def test_help_text_fits_and_table_cells_do_not_overlap(self):
+        from headscotter import render
+        original = render._draw_text
+        for cabinet in (False, True):
+            game = Game()
+            game.state = GameState.HOW_TO_PLAY
+            if cabinet:
+                game.joysticks[0] = object()
+            rects = []
+
+            def draw(*args, **kwargs):
+                rect = original(*args, **kwargs)
+                self.assertTrue(self.screen.get_rect().contains(rect), args[1])
+                rects.append((args[1], rect))
+                return rect
+
+            with patch("headscotter.render._draw_text", side_effect=draw):
+                render.draw_frame(self.screen, game)
+            for index, (text, rect) in enumerate(rects):
+                for other_text, other_rect in rects[index + 1:]:
+                    self.assertFalse(rect.colliderect(other_rect), f"{text} overlaps {other_text}")
+
+    def test_selection_never_changes_label_position_or_font_size(self):
+        from headscotter import render
+        game = Game()
+        with patch("headscotter.render._draw_text", wraps=render._draw_text) as draw:
+            for selected in (False, True):
+                render._draw_menu_row(self.screen, "HOW TO PLAY", 2, selected)
+            calls = draw.call_args_list
+            self.assertEqual(calls[0].args[2], calls[1].args[2])
+            self.assertEqual(calls[0].args[4], calls[1].args[4])
+
+    def test_static_background_and_portraits_are_cached_without_asset_lifetime_changes(self):
+        from headscotter import render
+        render._portrait.cache_clear()
+        game = Game()
+        with patch("pygame.transform.scale", wraps=pygame.transform.scale) as scale:
+            render.draw_frame(self.screen, game)
+            render.draw_frame(self.screen, game)
+        self.assertEqual(scale.call_count, 2)  # one transform per portrait, not per frame
+        self.assertIs(render._menu_background(), render._menu_background())
+
+    def test_whiff_pose_is_visible_even_while_airborne(self):
+        from headscotter import assets, render
+        game = Game()
+        game.start_match("2P")
+        player = game.player_left
+        player.on_ground = False
+        result = players.normal_kick(player, game.ball)  # kickoff ball out of reach
+        self.assertFalse(result.fired)
+        self.assertIs(render._player_sprite(game, player), assets.get("scotty_kick"))
 
 
 if __name__ == "__main__":

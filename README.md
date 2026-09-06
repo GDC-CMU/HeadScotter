@@ -17,11 +17,13 @@ are original and don't reproduce any specific commercial game.
   modes, chosen from the menu.
 - A **90-second match**, most goals wins, **sudden death** (next goal
   wins) if the score is tied at full time.
-- Two action buttons at most -- jump and kick -- so a first-time visitor
-  understands it in three seconds.
-- A **beatable but not passive** CPU opponent: it tracks the ball, jumps
-  when it's overhead, kicks when it's in range, and has a small,
-  human-like reaction lag rather than frame-perfect tracking.
+- Immediate normal kicks, jumping, and a separate hold/release power shot.
+- A resumable **pause menu** with Resume selected by default and Main Menu
+  for explicitly abandoning a match.
+- A **beatable, active 1v1 opponent**: it intercepts moving balls across the
+  pitch, recovers against incoming goal threats, jumps past blocking players,
+  and sets up forward headers and normal/power shots. It uses the same bodies,
+  speed, jump and actions as a human, with delayed, imperfect observations.
 - A self-playing **attract-mode demo** (CPU vs CPU, using the real
   match/physics/AI systems) after 15 seconds of idling on the menu.
 - **All gameplay art is swappable PNGs** -- see
@@ -45,19 +47,38 @@ right player.
 | Input | Action |
 |---|---|
 | Joystick axis 0 (left/right) | Move |
-| Button 1 (A) | Jump (also: confirm/select on menus) |
-| Button 2 (X) | Kick |
-| Button 5 (P1) | Back one level (match/menu -> main menu -> exit to gallery) |
+| Button 2 (X) | Normal kick **on press**; every fresh press attempts a kick |
+| Button 3 (Y) | Jump |
+| Button 1 (A) | Hold to charge a power shot; release to strike |
+| Button 9 (Start) | Select menu item / Resume |
+| Button 0 (B) / Button 5 (P1) | Pause during a match; resume while paused; otherwise back one level |
+
+Normal kicks show a pose even on a miss; only an in-range ball receives an
+impulse. Holding X does not repeat. Power-shot recovery never blocks normal X
+presses. A remains a select alias outside the pause menu, but **not** while paused.
 
 ### Keyboard (development)
 
-| Player | Move | Jump | Kick |
-|---|---|---|---|
-| 1 | `A` / `D` | `W` | `S` |
-| 2 | Left / Right arrows | Up arrow | Down arrow |
+| Player | Move | Jump | Normal kick (press) | Power (hold/release) |
+|---|---|---|---|---|
+| 1 | `A` / `D` | `W` | `X` / `S` | `C` |
+| 2 | Left / Right arrows | Up arrow | Down arrow / `/` | Right Shift |
 
 `Enter`/`Space` confirm menu selections; `Esc`/`Backspace` are aliases
 for the back button above.
+
+### Pause and returning to the gallery
+
+Either player's B/P1, or `Esc`, pauses any match phase, including kickoff
+and goal celebration. **Resume** is selected first; **Main Menu** abandons
+the match without recording a high score. Start/Enter selects; B/P1/Esc
+resumes directly. Positions, velocities, clocks, cooldowns, and CPU decisions
+stay frozen while paused. Unreleased power charges are cancelled. Release
+held action/select controls before using them again after a transition.
+
+Back from How to Play or results returns to the menu. Any demo input wakes
+the menu without selecting anything. Back at the root menu, or its Exit to
+Gallery entry, returns to the launcher. There is no network dependency at runtime.
 
 Run windowed during development with:
 
@@ -78,7 +99,6 @@ headscotter/
   physics.py              ball gravity/bounce/collision -- no pygame import
   players.py              player movement, jump, kick -- no pygame import
   cpu.py                   the 1P opponent's AI -- no pygame import
-  keeper.py                the automated goalkeeper defending each goal -- no pygame import
   match.py                 clock, scoring, sudden death, high-score file -- no pygame import
   input.py                 two joysticks + keyboard -> game actions -- no pygame import
   game.py                  the state machine (only pygame-touching module besides render/assets)
@@ -92,10 +112,10 @@ assets/preview/           gallery attract-mode preview loop (see below)
 docs/screenshots/         what it currently looks like
 ```
 
-`config.py`, `physics.py`, `players.py`, `cpu.py`, `keeper.py`,
+`config.py`, `physics.py`, `players.py`, `cpu.py`,
 `match.py`, and `input.py` never import pygame -- enforced by
 `tests/test_layering.py` -- so the ball physics, match rules, CPU
-behaviour, keeper behaviour, and input resolution are all testable with
+behaviour and input resolution are all testable with
 plain `unittest`, no display required.
 
 ## Tuning the physics
@@ -109,22 +129,48 @@ design: ball physics is the single thing most likely to need a
 after-the-fact tuning pass once people are actually playing it on the
 cabinet.
 
+### CPU tactics
+
+The CPU observes both the ball and opponent every **0.18 seconds**. Between
+observations it predicts their motion from that stale snapshot: the actual
+ball gravity, drag and rebounds, and the opponent's last observed movement
+and jump. It cannot read future input or see an unobserved deflection.
+
+There is no fixed defensive leash or timeout before chasing a ball. The CPU
+looks for a reachable intercept, sets up on the useful side of the ball, and
+recovers when an incoming shot threatens its goal. A blocked route triggers
+a jump timed from the existing 85px bodies and human jump arc. It commits
+until clear rather than reversing midway, and waits when another jumper
+prevents a safe crossing.
+
+For headers it evaluates reachable contact points using the real head rebound,
+then moves/stops in the air to meet the ball. Normal kicks use this frame's
+resulting facing; controlled distant/blocked attacks can use the existing
+hold/release power shot. It leaves room for rebounds rather than crowding the
+ball between two heads, and does not flatten a steep rising ball into a low
+kick. These are tactical choices, not extra speed, powers or a goalkeeper.
+
+Only `CPU_*` constants control these decisions. Tests exercise real live
+crossings, headers, threat clearances, attacks against a stationary player,
+mirrored opponents, and finite matches. Score averages are not used to weaken
+the opponent or retune the human/game-wide physics.
+
 ## Attract-mode preview (`assets/preview/`)
 
 The ArcadeLauncher's gallery plays a short looping animation *inside this
 game's card* while the cabinet idles -- it cannot run our own game loop
 to produce that (it's a separate process), so we ship a small
 pre-rendered clip instead. `assets/preview/manifest.json` lists an
-ordered sequence of `frame_NNN.png` files (200x150, 8fps, ~1.75s loop)
+ordered sequence of `frame_NNN.png` files (200x150, 12fps, 20 frames / ~1.67s loop)
 played on repeat; see the launcher's own preview contract for the full
 rules. This is entirely optional/read-only from the launcher's side --
 the launcher never runs this repo's code to produce it.
 
 The clip is generated, not hand-drawn: `tools/generate_preview.py` drives
 the real attract-mode demo (the same CPU-vs-CPU match shown in-game after
-15s idle) headlessly through the real render path, capturing a moment a
-few seconds into the very first kickoff where the ball is already in
-fast, open play. It is fully deterministic (fixed RNG seed, fixed
+15s idle) headlessly through the real render path, time-lapsing a complete
+kickoff-to-kickoff rally with the CPU's real movement, headers and separated
+normal/power actions. It is fully deterministic (fixed RNG seed, fixed
 simulated timestep, no wall-clock or persisted state involved) -- running
 it twice leaves `git status` clean. Regenerate after any art or physics
 change that would make the loop stop matching how the game actually
@@ -133,6 +179,16 @@ plays:
 ```
 python tools/generate_preview.py
 ```
+
+For a bounded UI review without changing the gallery preview or source sprites:
+
+```
+python tools/generate_preview.py --ui-output <artifact-directory>
+```
+
+This captures main/help/pause/result and live power-charge frames at 800x600,
+plus offscreen 1920x1080 letterboxed versions for scaling review. It does not
+open cabinet controls, enable audio, or write high scores.
 
 ## Development
 

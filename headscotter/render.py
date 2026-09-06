@@ -19,13 +19,14 @@ so gameplay elements always render on top of the goal art, never behind it.
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 from typing import Tuple
 
 import pygame
 
 from . import assets, config
 from . import match as match_mod
-from .game import Game, GameState, MENU_ITEMS
+from .game import Game, GameState, MENU_ITEMS, PAUSE_ITEMS
 
 HUD_TEXT_COLOR = (255, 255, 255)
 HUD_ACCENT_COLOR = (255, 210, 90)
@@ -33,6 +34,11 @@ HUD_DIM_COLOR = (210, 220, 230)
 MENU_SELECT_COLOR = (255, 210, 90)
 MENU_BG_TOP = (30, 42, 70)
 MENU_BG_BOTTOM = (14, 20, 34)
+MENU_ROW_BG = (48, 56, 74)
+MENU_ROW_Y = 280
+MENU_ROW_SPACING = 62
+MENU_ROW_SIZE = 34
+FOOTER_Y = 570
 LEFT_TEAM_COLOR = (224, 196, 140)   # matches Scotty's placeholder coat
 RIGHT_TEAM_COLOR = (150, 190, 235)  # matches the rival's placeholder color
 
@@ -71,7 +77,7 @@ def draw_frame(screen, game: Game) -> None:
     elif game.state is GameState.HOW_TO_PLAY:
         _draw_menu_background(screen)
         _draw_how_to_play(screen, game)
-    elif game.state in (GameState.MATCH, GameState.DEMO):
+    elif game.state in (GameState.MATCH, GameState.DEMO, GameState.PAUSED):
         _draw_stage(screen, game)
         _draw_goals(screen)
         _draw_players(screen, game)
@@ -79,9 +85,12 @@ def draw_frame(screen, game: Game) -> None:
         _draw_charge_indicator(screen, game.player_right)
         _draw_ball(screen, game)
         _draw_hud(screen, game)
-        _draw_phase_banner(screen, game)
+        if game.state is not GameState.PAUSED:
+            _draw_phase_banner(screen, game)
         if game.state is GameState.DEMO:
-            _draw_demo_banner(screen)
+            _draw_demo_banner(screen, game)
+        elif game.state is GameState.PAUSED:
+            _draw_pause(screen, game)
     elif game.state is GameState.RESULT:
         _draw_stage(screen, game)
         _draw_goals(screen)
@@ -137,10 +146,10 @@ def _draw_goals(screen) -> None:
 
 def _player_sprite(game: Game, player) -> "pygame.Surface":
     prefix = player.sprite_key
-    if not player.on_ground:
-        name = f"{prefix}_jump"
-    elif player.just_kicked:
+    if player.just_kicked:
         name = f"{prefix}_kick"
+    elif not player.on_ground:
+        name = f"{prefix}_jump"
     elif player.moving:
         frame = 1 if int(game.anim_clock / _ANIM_INTERVAL) % 2 == 0 else 2
         name = f"{prefix}_run_{frame}"
@@ -167,8 +176,8 @@ _CHARGE_BAR_COLOR_HIGH = (240, 60, 60)
 
 def _draw_charge_indicator(screen, player) -> None:
     """A small meter above a charging player's head, so the power-shot
-    mechanic (hold kick to charge, release to strike -- see
-    players.update_kick()/config.POWER_SHOT_*) is discoverable without a
+    mechanic (hold A/C/Right Shift to charge, release to strike -- see
+    players.update_power_shot()/config.POWER_SHOT_*) is discoverable without a
     tutorial. Only visible while that player is actually charging."""
     if player.kick_charge <= 0.0:
         return
@@ -241,22 +250,67 @@ def _draw_phase_banner(screen, game: Game) -> None:
             _draw_text(screen, "READY", 40, HUD_TEXT_COLOR, (config.SCREEN_WIDTH // 2, 250))
 
 
-def _draw_demo_banner(screen) -> None:
+def _draw_demo_banner(screen, game: Game) -> None:
     _draw_text(screen, "DEMO", 22, HUD_DIM_COLOR, (config.SCREEN_WIDTH // 2, config.PITCH_TOP + 70))
     _draw_text(
-        screen, "PRESS START TO PLAY", 20, HUD_DIM_COLOR,
+        screen, "ANY CONTROL: MAIN MENU", 20, HUD_DIM_COLOR,
         (config.SCREEN_WIDTH // 2, config.PITCH_TOP + 100),
     )
 
 
-def _draw_menu_background(screen) -> None:
+@lru_cache(maxsize=1)
+def _menu_background():
     """A simple vertical gradient matching the stadium's evening sky,
     instead of the old flat pitch-green fill -- keeps the menu/how-to-
     play/result screens visually part of the same game as the match."""
+    background = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT))
     for y in range(config.SCREEN_HEIGHT):
         t = y / (config.SCREEN_HEIGHT - 1)
         color = tuple(round(a + (b - a) * t) for a, b in zip(MENU_BG_TOP, MENU_BG_BOTTOM))
-        pygame.draw.line(screen, color, (0, y), (config.SCREEN_WIDTH, y))
+        pygame.draw.line(background, color, (0, y), (config.SCREEN_WIDTH, y))
+    return background
+
+
+def _draw_menu_background(screen) -> None:
+    screen.blit(_menu_background(), (0, 0))
+
+
+def _draw_menu_row(screen, label: str, index: int, selected: bool) -> None:
+    """Stable label geometry; selection has both a marker and a filled row."""
+    y = MENU_ROW_Y + index * MENU_ROW_SPACING
+    if selected:
+        rect = pygame.Rect(220, y - 24, 360, 48)
+        pygame.draw.rect(screen, MENU_ROW_BG, rect, border_radius=6)
+        pygame.draw.rect(screen, MENU_SELECT_COLOR, (220, y - 24, 4, 48))
+        pygame.draw.polygon(screen, MENU_SELECT_COLOR, [(237, y - 6), (237, y + 6), (245, y)])
+    _draw_text(screen, label, MENU_ROW_SIZE, MENU_SELECT_COLOR if selected else HUD_TEXT_COLOR, (400, y))
+
+
+def _draw_footer(screen, game: Game, *, select: str = "SELECT", back: str = "BACK", navigate=False) -> None:
+    if game.has_joysticks:
+        hint = f"START: {select}    B / P1: {back}"
+        if navigate:
+            hint = "STICK: NAVIGATE    " + hint
+    else:
+        hint = f"ENTER: {select}    ESC: {back}"
+        if navigate:
+            hint = "UP / DOWN: NAVIGATE    " + hint
+    _draw_text(screen, hint, 20, HUD_DIM_COLOR, (400, FOOTER_Y))
+
+
+@lru_cache(maxsize=1)
+def _scrim():
+    surface = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
+    surface.fill((10, 16, 28, 190))
+    return surface
+
+
+def _draw_pause(screen, game: Game) -> None:
+    screen.blit(_scrim(), (0, 0))
+    _draw_text(screen, "PAUSED", 52, HUD_ACCENT_COLOR, (400, 170))
+    for index, item in enumerate(PAUSE_ITEMS):
+        _draw_menu_row(screen, item, index, index == game.pause_index)
+    _draw_footer(screen, game, back="RESUME", navigate=True)
 
 
 def _draw_menu(screen, game: Game) -> None:
@@ -272,36 +326,25 @@ def _draw_menu(screen, game: Game) -> None:
     accent_rect.center = (config.SCREEN_WIDTH // 2, 168)
     pygame.draw.rect(screen, title_color, accent_rect, border_radius=2)
 
-    top = 280
-    spacing = 62
     for index, item in enumerate(MENU_ITEMS):
-        selected = index == game.menu_index
-        color = MENU_SELECT_COLOR if selected else HUD_TEXT_COLOR
-        label = f"> {item} <" if selected else item
-        _draw_text(screen, label, 40 if selected else 34, color, (config.SCREEN_WIDTH // 2, top + index * spacing))
+        _draw_menu_row(screen, item, index, index == game.menu_index)
 
     _draw_menu_rivals(screen, game)
 
-    lines = _control_legend_lines(game)
-    base_y = config.SCREEN_HEIGHT - 30 if len(lines) == 1 else config.SCREEN_HEIGHT - 42
-    for i, line in enumerate(lines):
-        _draw_text(screen, line, 20, HUD_DIM_COLOR, (config.SCREEN_WIDTH // 2, base_y + i * 22))
-
-
-def _control_legend_lines(game: Game):
-    """The bottom-of-screen control summary, adapted to whatever input
-    device is actually in use -- the arcade cabinet's stick/button names
-    when a real joystick is connected, keyboard key names otherwise (a
-    dev laptop with none attached). Never hard-code one or the other."""
-    if game.has_joysticks:
-        return ["STICK: MOVE    A: SELECT / JUMP    X: KICK    P1: BACK"]
-    return [
-        "ARROWS OR WASD: MOVE    ENTER: SELECT",
-        "W/UP: JUMP    X OR S: KICK    ESC: BACK",
-    ]
+    _draw_footer(screen, game, back="GALLERY", navigate=True)
 
 
 _MENU_PORTRAIT_SCALE = 1.9
+
+
+@lru_cache(maxsize=8)
+def _portrait(source, facing_left: bool):
+    if facing_left:
+        source = pygame.transform.flip(source, True, False)
+    return pygame.transform.scale(source, (
+        round(source.get_width() * _MENU_PORTRAIT_SCALE),
+        round(source.get_height() * _MENU_PORTRAIT_SCALE),
+    ))
 
 
 def _draw_menu_rivals(screen, game: Game) -> None:
@@ -311,16 +354,8 @@ def _draw_menu_rivals(screen, game: Game) -> None:
     only ever being seen small and in motion during a match. A gentle,
     out-of-phase idle bob (driven by the free-running attract clock)
     keeps the screen visibly alive rather than a static splash image."""
-    scotty = assets.get("scotty_idle")
-    rival = pygame.transform.flip(assets.get("rival_idle"), True, False)
-
-    scale = _MENU_PORTRAIT_SCALE
-    scotty_big = pygame.transform.scale(
-        scotty, (round(scotty.get_width() * scale), round(scotty.get_height() * scale))
-    )
-    rival_big = pygame.transform.scale(
-        rival, (round(rival.get_width() * scale), round(rival.get_height() * scale))
-    )
+    scotty_big = _portrait(assets.get("scotty_idle"), False)
+    rival_big = _portrait(assets.get("rival_idle"), True)
 
     feet_y = config.SCREEN_HEIGHT - 105
     bob_scotty = math.sin(game.attract_clock * 3.0) * 4.0
@@ -331,40 +366,30 @@ def _draw_menu_rivals(screen, game: Game) -> None:
 
 def _draw_how_to_play(screen, game: Game) -> None:
     _draw_text(screen, "HOW TO PLAY", 52, HUD_ACCENT_COLOR, (config.SCREEN_WIDTH // 2, 80))
-    if game.has_joysticks:
-        move_line = "STICK LEFT/RIGHT   move"
-        jump_line = "A                  jump"
-        kick_line = "X                  kick -- hold to charge a power shot, release to strike"
-        back_line = "P1 / Esc: back"
-    else:
-        move_line = "ARROWS OR A/D      move"
-        jump_line = "W OR UP            jump"
-        kick_line = "X OR S             kick -- hold to charge a power shot, release to strike"
-        back_line = "Esc: back"
-    lines = [
-        "Knock the ball into the other goal more times than they knock it into yours.",
-        "",
-        move_line,
-        jump_line,
-        kick_line,
-        "",
-        "There is no goalkeeper -- you defend your own goal.",
-        "",
-        "Matches last 90 seconds. Tied at full time? Next goal wins -- sudden death.",
-        "",
-        "1 PLAYER is you against the CPU. 2 PLAYERS is head to head --",
-        "stick 1 controls the left player, stick 2 controls the right player.",
-        "",
-        back_line,
-    ]
-    y = 160
-    for line in lines:
-        if line:
-            _draw_text(screen, line, 24, HUD_TEXT_COLOR, (config.SCREEN_WIDTH // 2, y))
-        y += 32
+    _draw_text(screen, "Score more goals in 90 seconds. Tied? Next goal wins.", 24, HUD_TEXT_COLOR, (400, 142))
+    _draw_text(screen, "Defend your own goal. There is no goalkeeper.", 24, HUD_DIM_COLOR, (400, 173))
+    _draw_text(screen, "1 PLAYER: vs CPU. Either stick or keyboard set controls Scotty.", 22, HUD_TEXT_COLOR, (400, 212))
+    _draw_text(screen, "2 PLAYERS: stick 1 / keys P1 on the left; stick 2 / keys P2 on the right.", 22, HUD_TEXT_COLOR, (400, 237))
+    columns = (125, 300, 470, 655)
+    for x, label in zip(columns, ("ACTION", "CABINET", "KEYS P1", "KEYS P2")):
+        _draw_text(screen, label, 20, HUD_ACCENT_COLOR, (x, 282))
+    pygame.draw.line(screen, MENU_ROW_BG, (60, 299), (740, 299), 2)
+    rows = (
+        ("Move", "Stick left / right", "A / D", "Left / Right"),
+        ("Jump", "Y", "W", "Up"),
+        ("Normal kick", "X", "X / S", "Down / Slash"),
+        ("Power shot", "Hold / release A", "Hold / release C", "Hold / release R Shift"),
+    )
+    for row, cells in enumerate(rows):
+        for x, text in zip(columns, cells):
+            _draw_text(screen, text, 22, HUD_TEXT_COLOR, (x, 322 + row * 38))
+    _draw_text(screen, "Normal kicks fire on press, even while power is recharging.", 22, HUD_DIM_COLOR, (400, 488))
+    _draw_text(screen, "B / P1 / Esc: pause. Resume or choose Main Menu.", 22, HUD_DIM_COLOR, (400, 521))
+    _draw_footer(screen, game, select="MAIN MENU")
 
 
 def _draw_result(screen, game: Game) -> None:
+    screen.blit(_scrim(), (0, 0))
     m = game.match
     winner = game.result_winner
     if game.mode == "1P":
@@ -372,7 +397,7 @@ def _draw_result(screen, game: Game) -> None:
     else:
         headline = "LEFT PLAYER WINS!" if winner == "left" else "RIGHT PLAYER WINS!"
 
-    _draw_text(screen, headline, 60, HUD_ACCENT_COLOR, (config.SCREEN_WIDTH // 2, 200))
+    _draw_text(screen, headline, 52, HUD_ACCENT_COLOR, (config.SCREEN_WIDTH // 2, 170))
     _draw_text(screen, f"{m.score_left} - {m.score_right}", 72, HUD_TEXT_COLOR, (config.SCREEN_WIDTH // 2, 290))
 
     if game.result_new_high_score:
@@ -383,4 +408,6 @@ def _draw_result(screen, game: Game) -> None:
             (config.SCREEN_WIDTH // 2, 360),
         )
 
-    _draw_text(screen, "PRESS START", 28, HUD_TEXT_COLOR, (config.SCREEN_WIDTH // 2, 440))
+    _draw_menu_rivals(screen, game)
+    _draw_menu_row(screen, "MAIN MENU", 3, True)
+    _draw_footer(screen, game)

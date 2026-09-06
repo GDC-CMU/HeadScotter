@@ -24,6 +24,7 @@ class GameState(Enum):
     ATTRACT = auto()       # the main menu
     HOW_TO_PLAY = auto()
     MATCH = auto()
+    PAUSED = auto()
     RESULT = auto()
     DEMO = auto()          # self-playing attract-mode demo (CPU vs CPU)
 
@@ -33,6 +34,7 @@ MENU_TWO_PLAYERS = "2 PLAYERS"
 MENU_HOW_TO_PLAY = "HOW TO PLAY"
 MENU_EXIT_TO_GALLERY = "EXIT TO GALLERY"
 MENU_ITEMS = (MENU_ONE_PLAYER, MENU_TWO_PLAYERS, MENU_HOW_TO_PLAY, MENU_EXIT_TO_GALLERY)
+PAUSE_ITEMS = ("RESUME", "MAIN MENU")
 
 
 class Game:
@@ -52,6 +54,9 @@ class Game:
         self.menu_index = 0
         self._menu_last_direction: Optional[input_mod.MenuDirection] = None
         self._menu_last_confirm = False
+        self.pause_index = 0
+        self._actions = input_mod.ActionTracker()
+        self._transition_pending = False
 
         # Attract mode: how long the main menu has sat with no genuine
         # input (see config.DEMO_IDLE_SECONDS / input.any_genuine_input()).
@@ -72,12 +77,8 @@ class Game:
         self.player_right: Optional[players.Player] = None
         self.cpu_left: Optional[cpu.CPUController] = None
         self.cpu_right: Optional[cpu.CPUController] = None
-        # Anti-stalemate timer (config.CPU_STALEMATE_SECONDS): seconds of
-        # live play since the last goal (or kickoff). Reset on every goal
-        # and every fresh match; once it crosses the threshold, every CPU
-        # abandons its defensive leash entirely until the next goal, so a
-        # prolonged deadlock (e.g. against a human who never moves at
-        # all) always eventually resolves. See _step_gameplay().
+        # Live-play elapsed since the last goal/kickoff. Kept for match
+        # diagnostics and pause snapshots; CPU pursuit no longer waits on it.
         self._seconds_since_goal = 0.0
         # Toggled every gameplay frame -- see _step_gameplay()'s note on
         # why a perfectly symmetric CPU-vs-CPU tie must not always be
@@ -103,6 +104,8 @@ class Game:
         self._joystick_order: List[int] = []
         self._buttons_by_instance: Dict[int, Set[int]] = {}
         self.pressed_keys: Set[str] = set()
+        self._key_downs: List[str] = []
+        self._button_downs_by_instance: Dict[int, List[int]] = {}
 
         # Startup input-residue guard (see config.INPUT_SETTLE_SECONDS): the
         # gallery may hand us a still-held select button, so menu confirm is
@@ -176,11 +179,27 @@ class Game:
 
     # -- pure per-frame update --------------------------------------------------
     def update(self, dt: float, raw: RawInput) -> None:
+        # Own back handling here as well as at the public testing seam. The
+        # latch makes an external maybe_go_back() + update() pair safe.
+        self.maybe_go_back(raw)
+        if self._transition_pending:
+            self._transition_pending = False
+            return
+        self._update_frame(dt, raw)
+        self._transition_pending = False
+
+    def _update_frame(self, dt: float, raw: RawInput) -> None:
+        if self.state is GameState.PAUSED:
+            self._actions.suspend(raw)
+            self._update_pause(raw)
+            return  # no gameplay, RNG, animation, phase, idle or settle clocks
+
         self.attract_clock += dt
         if self._input_settle_remaining > 0.0:
             self._input_settle_remaining = max(0.0, self._input_settle_remaining - dt)
 
         if self.state is GameState.ATTRACT:
+            self._actions.suspend(raw)
             if input_mod.any_genuine_input(raw):
                 self._menu_idle_seconds = 0.0
             else:
@@ -194,6 +213,7 @@ class Game:
         if self.state is GameState.DEMO:
             if input_mod.any_genuine_input(raw):
                 self._exit_demo()
+                self._consume_transition(raw)
                 return
             self._advance_match(dt, RawInput())  # both sides are CPU-controlled; raw is unused
             return
@@ -201,6 +221,7 @@ class Game:
         if self.state is GameState.HOW_TO_PLAY:
             if self._menu_confirm_pressed(raw):
                 self._return_to_menu()
+                self._consume_transition(raw)
             return
 
         if self.state is GameState.MATCH:
@@ -210,6 +231,7 @@ class Game:
         if self.state is GameState.RESULT:
             if self._menu_confirm_pressed(raw):
                 self._return_to_menu()
+                self._consume_transition(raw)
             return
 
     # -- main menu ----------------------------------------------------------------
@@ -234,6 +256,7 @@ class Game:
         if self._menu_confirm_pressed(raw):
             audio.play("menu_select")
             self._activate_menu_item()
+            self._consume_transition(raw)
 
     def _menu_direction_pressed(self, raw: RawInput) -> Optional[input_mod.MenuDirection]:
         """Edge-triggered steer: fires only the frame a *new* direction is
@@ -248,7 +271,7 @@ class Game:
         """Edge-triggered confirm, additionally suppressed during the
         brief startup settle window (config.INPUT_SETTLE_SECONDS) as a
         belt-and-braces second guard on top of hardware-state seeding."""
-        current = input_mod.wants_confirm(raw)
+        current = input_mod.wants_confirm(raw, paused=self.state is GameState.PAUSED)
         settling = self._input_settle_remaining > 0.0
         pressed = current and not self._menu_last_confirm and not settling
         self._menu_last_confirm = current
@@ -264,6 +287,32 @@ class Game:
             self.state = GameState.HOW_TO_PLAY
         elif item == MENU_EXIT_TO_GALLERY:
             self._exit_to_gallery()
+
+    def _consume_transition(self, raw: RawInput) -> None:
+        """Discard actions/charges and require release before another select.
+
+        Existing committed poses/cooldowns remain frozen on pause. Only
+        uncommitted charge is cancelled, and each held action source is gated.
+        """
+        self._transition_pending = True
+        self._menu_last_confirm = True
+        self._menu_last_direction = input_mod.resolve_menu_direction(raw)
+        self._actions.suspend(raw)
+        for player in (self.player_left, self.player_right):
+            if player is not None:
+                player.kick_charge = 0.0
+
+    def _update_pause(self, raw: RawInput) -> None:
+        if self._menu_direction_pressed(raw) is not None:
+            self.pause_index = 1 - self.pause_index
+            audio.play("menu_move")
+        if self._menu_confirm_pressed(raw):
+            audio.play("menu_select")
+            if self.pause_index == 0:
+                self.state = GameState.MATCH
+            else:
+                self._return_to_menu()  # abandonment; never records a score or exits
+            self._consume_transition(raw)
 
     # -- match / demo progression -------------------------------------------------
     def _advance_match(self, dt: float, raw: RawInput) -> None:
@@ -291,17 +340,17 @@ class Game:
                 self._enter_demo()  # bounds the demo: start a fresh one rather than stopping
             else:
                 self._enter_result()
+                self._consume_transition(raw)
             return
 
         if match_mod.is_ball_live(self.match):
             self._step_gameplay(dt, raw)
+        else:
+            # No buffered kick/jump/charge from a frozen kickoff/goal phase.
+            self._actions.suspend(raw)
 
     def _step_gameplay(self, dt: float, raw: RawInput) -> None:
-        # Anti-stalemate: once neither side has scored for long enough,
-        # every CPU drops its defensive leash entirely -- see
-        # config.CPU_STALEMATE_SECONDS and CPUController._defensive_target_x().
         self._seconds_since_goal += dt
-        force_full_advance = self._seconds_since_goal >= config.CPU_STALEMATE_SECONDS
 
         # A perfectly symmetric CPU-vs-CPU approach to a resting ball
         # (e.g. every kickoff) has both sides reaching kick range on the
@@ -315,28 +364,28 @@ class Game:
         # match instead of always going the same way.
         self._priority_swap = not self._priority_swap
         swap = self._priority_swap
+        actions_l, actions_r = self._actions.sample(raw, single_player=self.mode == "1P")
 
         if self.cpu_left is not None:
-            intent = self.cpu_left.update(dt, self.ball, self.player_left, force_full_advance)
-            move_l, jump_l, kick_l = intent.move, intent.jump, intent.kick
+            intent = self.cpu_left.update(dt, self.ball, self.player_left, self.player_right)
+            move_l = intent.move
+            actions_l = input_mod.PlayerActions(normal_kicks=int(intent.normal_kick), jump=intent.jump,
+                                               power_held=intent.power_held)
         elif self.mode == "1P":
             move_l = input_mod.resolve_move_single_player(raw)
-            jump_l = input_mod.wants_jump_single(raw)
-            kick_l = input_mod.wants_kick_single(raw)
         else:
             move_l = input_mod.resolve_move_p1(raw)
-            jump_l = input_mod.wants_jump_p1(raw)
-            kick_l = input_mod.wants_kick_p1(raw)
-        players.update_player(self.player_left, dt, move_l, jump_l)
-
         if self.cpu_right is not None:
-            intent = self.cpu_right.update(dt, self.ball, self.player_right, force_full_advance)
-            move_r, jump_r, kick_r = intent.move, intent.jump, intent.kick
+            intent = self.cpu_right.update(dt, self.ball, self.player_right, self.player_left)
+            move_r = intent.move
+            actions_r = input_mod.PlayerActions(normal_kicks=int(intent.normal_kick), jump=intent.jump,
+                                               power_held=intent.power_held)
         else:
             move_r = input_mod.resolve_move_p2(raw)
-            jump_r = input_mod.wants_jump_p2(raw)
-            kick_r = input_mod.wants_kick_p2(raw)
-        players.update_player(self.player_right, dt, move_r, jump_r)
+        # Both CPUs observe the same pre-movement frame, not a privileged
+        # already-updated opponent on the right-hand side.
+        players.update_player(self.player_left, dt, move_l, actions_l.jump)
+        players.update_player(self.player_right, dt, move_r, actions_r.jump)
 
         # Keep the two field-player bodies from interpenetrating -- after
         # both have moved for the frame and before any ball interaction,
@@ -344,21 +393,13 @@ class Game:
         # position.
         players.separate_players(self.player_left, self.player_right)
 
-        # Kicking is charge-and-release (see players.update_kick and
-        # config.POWER_SHOT_*): kick_l/kick_r are simply "is the kick
-        # control held this frame", exactly as before -- update_kick
-        # only actually launches the ball on the frame the control is
-        # released, with strength scaled by how long it was held.
+        # Attempts are consumed once per render update, before ball substeps.
         if swap:
-            kick_result_r = players.update_kick(self.player_right, self.ball, kick_r, dt)
-            kick_result_l = players.update_kick(self.player_left, self.ball, kick_l, dt)
+            kicked_r = self._apply_actions(self.player_right, actions_r, dt)
+            kicked_l = self._apply_actions(self.player_left, actions_l, dt)
         else:
-            kick_result_l = players.update_kick(self.player_left, self.ball, kick_l, dt)
-            kick_result_r = players.update_kick(self.player_right, self.ball, kick_r, dt)
-        if kick_result_l.fired:
-            audio.play("power_shot" if kick_result_l.is_power_shot else "kick")
-        if kick_result_r.fired:
-            audio.play("power_shot" if kick_result_r.is_power_shot else "kick")
+            kicked_l = self._apply_actions(self.player_left, actions_l, dt)
+            kicked_r = self._apply_actions(self.player_right, actions_r, dt)
 
         # Substep the ball's movement so a fast ball can never tunnel
         # through a thin collider (a goalpost, the crossbar, or a
@@ -375,25 +416,14 @@ class Game:
         n_substeps = max(1, math.ceil(self.ball.speed() * dt / config.BALL_MAX_STEP_PX))
         sub_dt = dt / n_substeps
         event = None
+        contacts = [(self.player_left, kicked_l), (self.player_right, kicked_r)]
+        if swap:
+            contacts.reverse()
         for _ in range(n_substeps):
-            if swap:
-                if not kick_result_r.fired:
-                    if players.apply_head_collision(self.player_right, self.ball):
-                        audio.play("header")
-                    players.apply_body_collision(self.player_right, self.ball)
-                if not kick_result_l.fired:
-                    if players.apply_head_collision(self.player_left, self.ball):
-                        audio.play("header")
-                    players.apply_body_collision(self.player_left, self.ball)
-            else:
-                if not kick_result_l.fired:
-                    if players.apply_head_collision(self.player_left, self.ball):
-                        audio.play("header")
-                    players.apply_body_collision(self.player_left, self.ball)
-                if not kick_result_r.fired:
-                    if players.apply_head_collision(self.player_right, self.ball):
-                        audio.play("header")
-                    players.apply_body_collision(self.player_right, self.ball)
+            for player, kicked in contacts:
+                if not kicked:
+                    players.apply_head_collision(player, self.ball, on_impact=self._on_header)
+                    players.apply_body_collision(player, self.ball)
 
             sub_event = physics.step_ball(self.ball, sub_dt, on_bounce=self._on_ball_bounce)
             if sub_event is not None:
@@ -409,6 +439,32 @@ class Game:
             self._seconds_since_goal = 0.0
 
         self.anim_clock += dt
+
+    def _apply_actions(self, player, actions: input_mod.PlayerActions, dt: float) -> bool:
+        fired = False
+        power_results = []
+        if actions.power_released:
+            power_results.append(players.update_power_shot(player, self.ball, False, 0.0))
+        # A same-frame power tap still releases an ordinary-strength shot.
+        if actions.power_tap:
+            players.update_power_shot(player, self.ball, True, dt)
+        if not actions.power_released or actions.power_held or actions.power_tap:
+            power_results.append(players.update_power_shot(player, self.ball, actions.power_held, dt))
+        for power in power_results:
+            if power.fired:
+                audio.play("power_shot" if power.is_power_shot else "kick")
+                fired = True
+        # Normal presses remain independent, including during an A charge.
+        for _ in range(actions.normal_kicks):
+            result = players.normal_kick(player, self.ball)
+            if result.fired:
+                audio.play("kick")
+                fired = True
+        return fired
+
+    @staticmethod
+    def _on_header() -> None:
+        audio.play("header")
 
     @staticmethod
     def _on_ball_bounce(surface: str) -> None:
@@ -457,14 +513,9 @@ class Game:
         - From the main menu (ATTRACT), back means exit to the gallery
           (``sys.exit(0)``) -- there is nothing above the menu to go
           back to.
-        - From every other state -- HOW_TO_PLAY, RESULT, the self-playing
-          DEMO (see _exit_demo()), or a MATCH in progress -- back returns
-          to the main menu, treating a match in progress as abandoned
-          (no high score is ever recorded for an abandoned match).
-
-        So leaving mid-match takes two presses: once back to the menu,
-        once more to exit. That is deliberate -- it makes an accidental
-        press recoverable instead of instantly dumping a visitor out.
+        - MATCH pauses in place (including kickoff/goal); PAUSED resumes.
+        - HOW_TO_PLAY, RESULT and DEMO return one level to the main menu.
+        - Abandoning a live run is an explicit Main Menu choice while paused.
 
         Edge-triggered with a single armed/disarmed latch tracked against
         the raw physical signal, not against what it currently does: it
@@ -485,8 +536,14 @@ class Game:
             self._exit_to_gallery()
         elif self.state is GameState.DEMO:
             self._exit_demo()
+        elif self.state is GameState.MATCH:
+            self.state = GameState.PAUSED
+            self.pause_index = 0
+        elif self.state is GameState.PAUSED:
+            self.state = GameState.MATCH
         else:
             self._return_to_menu()
+        self._consume_transition(raw)
 
     def _return_to_menu(self) -> None:
         self.state = GameState.ATTRACT
@@ -556,6 +613,7 @@ class Game:
         for instance_id in self._joystick_order:
             joy = self.joysticks.get(instance_id)
             if joy is None:
+                axes.append((0.0, 0.0))
                 continue
             try:
                 x = joy.get_axis(config.JOYSTICK_AXIS_X) if joy.get_numaxes() > config.JOYSTICK_AXIS_X else 0.0
@@ -576,6 +634,10 @@ class Game:
             pressed_keys=frozenset(self.pressed_keys),
             pressed_buttons=merged_buttons,
             buttons_by_device=buttons_by_device,
+            key_downs=tuple(self._key_downs),
+            button_downs_by_device=tuple(
+                tuple(self._button_downs_by_instance.get(iid, ())) for iid in self._joystick_order
+            ),
         )
 
     def _seed_input_state_from_hardware(self) -> None:
@@ -625,24 +687,35 @@ class Game:
             if instance_id not in self._joystick_order:
                 self._joystick_order.append(instance_id)
         self.pressed_keys = set(pressed_keys)
+        self._key_downs.clear()
+        self._button_downs_by_instance.clear()
         self._buttons_by_instance = {iid: set(buttons) for iid, buttons in buttons_by_instance.items()}
         seeded = self._build_raw_input()
         self._menu_last_confirm = input_mod.wants_confirm(seeded)
         self._menu_last_direction = input_mod.resolve_menu_direction(seeded)
         self._back_armed = not input_mod.wants_go_back(seeded)
+        self._actions.suspend(seeded)
         self._input_settle_remaining = config.INPUT_SETTLE_SECONDS
 
     def poll_hardware(self) -> RawInput:
         """Read real pygame events/hardware into a RawInput this frame."""
+        self._key_downs.clear()
+        self._button_downs_by_instance.clear()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.pressed_keys.add("escape")
             elif event.type == pygame.KEYDOWN:
-                self.pressed_keys.add(pygame.key.name(event.key))
+                key = pygame.key.name(event.key)
+                if key not in self.pressed_keys:
+                    self._key_downs.append(key)
+                self.pressed_keys.add(key)
             elif event.type == pygame.KEYUP:
                 self.pressed_keys.discard(pygame.key.name(event.key))
             elif event.type == pygame.JOYBUTTONDOWN:
-                self._buttons_by_instance.setdefault(event.instance_id, set()).add(event.button)
+                held = self._buttons_by_instance.setdefault(event.instance_id, set())
+                if event.button not in held:
+                    self._button_downs_by_instance.setdefault(event.instance_id, []).append(event.button)
+                held.add(event.button)
             elif event.type == pygame.JOYBUTTONUP:
                 self._buttons_by_instance.setdefault(event.instance_id, set()).discard(event.button)
             elif event.type == pygame.JOYDEVICEADDED:
@@ -659,7 +732,6 @@ class Game:
         self.init_display()
         while True:
             raw = self.poll_hardware()
-            self.maybe_go_back(raw)
             dt = self.clock.tick(config.FPS) / 1000.0
             dt = min(dt, 0.25)  # guard against huge stalls tunneling actors through walls
             self.update(dt, raw)

@@ -20,6 +20,20 @@ class GravityTests(unittest.TestCase):
 
 
 class GroundBounceTests(unittest.TestCase):
+    def test_rest_is_supported_even_after_a_long_frame(self):
+        ball = physics.new_kickoff_ball()
+        events = []
+        for _ in range(10):
+            physics.step_ball(ball, 0.25, events.append)
+        self.assertEqual(events, [])
+        self.assertEqual(ball.vy, 0.0)
+
+    def test_separating_floor_penetration_is_not_an_impact(self):
+        ball = Ball(400, config.GROUND_Y - 5, vy=-200)
+        events = []
+        physics.step_ball(ball, 0.001, events.append)
+        self.assertEqual(events, [])
+        self.assertLess(ball.vy, 0)
     def test_ball_bounces_off_ground_with_restitution(self):
         ball = Ball(x=config.PITCH_CENTER_X, y=config.GROUND_Y - 5, vx=0.0, vy=200.0)
         physics.step_ball(ball, dt=1 / 60.0)
@@ -40,6 +54,30 @@ class GroundBounceTests(unittest.TestCase):
 
 
 class CeilingAndWallTests(unittest.TestCase):
+    def test_wall_and_ceiling_contacts_require_incoming_normal_speed(self):
+        cases = [
+            (config.PITCH_LEFT + 5, config.PITCH_TOP + 80, 200, 0),
+            (config.PITCH_RIGHT - 5, config.PITCH_TOP + 80, -200, 0),
+            (400, config.PITCH_TOP + 5, 0, 200),
+            (config.PITCH_LEFT + 5, config.PITCH_TOP + 80, 0, 0),
+        ]
+        for x, y, vx, vy in cases:
+            events = []
+            physics.step_ball(Ball(x, y, vx, vy), 0.001, events.append)
+            self.assertEqual(events, [])
+
+    def test_real_wall_contact_rearms_only_after_separation(self):
+        ball = Ball(config.PITCH_LEFT + 5, config.PITCH_TOP + 80, -200, 0)
+        events = []
+        for _ in range(5):
+            ball.x, ball.vx = config.PITCH_LEFT + 5, -200
+            physics.step_ball(ball, 0.001, events.append)
+        self.assertEqual(events, ["wall"])
+        ball.x = 400
+        physics.step_ball(ball, 0.001, events.append)
+        ball.x, ball.vx = config.PITCH_LEFT + 5, -200
+        physics.step_ball(ball, 0.001, events.append)
+        self.assertEqual(events, ["wall", "wall"])
     def test_ball_bounces_off_ceiling(self):
         ball = Ball(x=config.PITCH_CENTER_X, y=config.PITCH_TOP + 5, vx=0.0, vy=-200.0)
         physics.step_ball(ball, dt=1 / 60.0)

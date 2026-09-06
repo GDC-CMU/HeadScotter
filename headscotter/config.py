@@ -216,14 +216,14 @@ BALL_RESTITUTION_WALL = 0.70
 # separates a header bounce from the ordinary ground/wall restitution above.
 # With the goalkeeper removed (see the project brief: "the genre has no
 # goalkeeper"), defense now depends entirely on the CPU's own positioning
-# discipline (see CPU_MAX_ADVANCE_FRACTION below) rather than a last line of
+# discipline (see the CPU tactics below) rather than a last line of
 # defense. Counterintuitively, *raising* this value (a punchier defensive
 # header) tightens scoring rather than loosening it: a soft header
 # (a lower value) doesn't clear the ball away from danger, so it lingers
 # in the danger zone and gets poked back in -- confirmed by sweeping
 # candidates against full-match simulation (see tests/test_balance.py),
 # not assumed. Re-tuned to 0.90 (from an initial 0.76) alongside
-# CPU_MAX_ADVANCE_FRACTION and KICK_IMPULSE_SPEED below after making the
+# the former CPU leash and KICK_IMPULSE_SPEED below after making the
 # ball itself bouncier/floatier (BALL_GRAVITY/BALL_RESTITUTION_GROUND
 # above): a much livelier ball needs a correspondingly firmer defensive
 # header to clear it, or scoring runs away into the double digits per
@@ -284,7 +284,7 @@ KICK_RANGE_Y = 70.0
 # still meaningfully stronger on top of this.
 KICK_IMPULSE_SPEED = 300.0       # px/sec, magnitude of the velocity a kick imparts
 KICK_LAUNCH_ANGLE_DEG = 38.0     # above horizontal, in the kicker's facing direction
-KICK_COOLDOWN_SECONDS = 0.35     # minimum time between two kicks by the same player
+KICK_COOLDOWN_SECONDS = 0.35     # power recovery base; also CPU's normal-attempt interval
 # How long the "just kicked" pose (render.py's kick sprite) is held after
 # any kick fires, normal or power -- independent of the (now variable,
 # see POWER_SHOT_* below) actual cooldown, so the pose always reads the
@@ -292,7 +292,7 @@ KICK_COOLDOWN_SECONDS = 0.35     # minimum time between two kicks by the same pl
 KICK_POSE_HOLD_SECONDS = 0.15
 
 # --- Power shot ----------------------------------------------------------------
-# Holding the kick control charges a power shot; releasing it fires --
+# Holding the separate power control charges a shot; releasing it fires --
 # with the strength interpolated continuously between an ordinary kick
 # (an immediate tap-and-release) and a full power shot (held for the full
 # charge time). NOT sourced -- the research report's corpus predates this
@@ -311,86 +311,34 @@ POWER_SHOT_IMPULSE_SPEED = 850.0   # px/sec, magnitude at full charge
 POWER_SHOT_LAUNCH_ANGLE_DEG = 20.0
 # Extra cooldown added on top of KICK_COOLDOWN_SECONDS, scaled by charge
 # fraction -- the gate that keeps a power shot from simply replacing
-# ordinary kicking: the harder you hit it, the longer you're open before
-# you can do it again.
+# ordinary kicking: the harder you hit it, the longer before another power
+# shot. Fresh normal kicks are always available.
 POWER_SHOT_COOLDOWN_BONUS_SECONDS = 0.55
 
 # --- CPU opponent (1P mode) -------------------------------------------------------
-# The CPU only "perceives" the ball on a fixed tick instead of every frame,
-# and extrapolates between ticks from a stale velocity snapshot -- this is
-# what gives it a small, human-like reaction lag rather than frame-perfect
-# tracking, and is what makes it beatable.
+# Ball and opponent observations refresh together on a delayed tick.
+# Predictions use only that stale observation and the ordinary ball/body
+# rules: the CPU cannot see future input or unobserved collisions.
 CPU_REACTION_DELAY_SECONDS = 0.18
-# Random aim error re-rolled every perception tick, so the CPU is never
-# perfectly accurate even once it has "seen" the ball.
-CPU_AIM_ERROR_PX = 26.0
-# Below this horizontal distance from its target the CPU stops adjusting,
-# instead of jittering back and forth around a pixel-perfect spot.
-CPU_MOVE_DEADZONE_PX = 12.0
-# The CPU jumps when the ball is within this horizontal distance and is
-# above its own head by at least this many pixels.
-CPU_JUMP_RANGE_X = 70.0
-CPU_JUMP_BALL_HEIGHT = 20.0
-# The CPU's own kick hit-box, checked against its *perceived* ball position
-# (so its lag applies to kicks too, not just movement).
-CPU_KICK_RANGE_X = KICK_RANGE_X
-CPU_KICK_RANGE_Y = KICK_RANGE_Y
-# The genre has no goalkeeper (confirmed across every reference
-# implementation in the research report) -- each player, human or CPU,
-# defends their own goal directly. Without a keeper as a last line of
-# defense, this is the single most important defensive parameter in the
-# game: a field player who fully committed forward on every attack would
-# leave their own goal completely undefended between the moment they lose
-# the ball and the moment they can run all the way back -- and, visually,
-# both players simply chasing the ball everywhere is what caused the
-# "glued together in the middle of the pitch" look this replaces. This
-# caps how far a CPU will chase the ball away from its own goal, as a
-# fraction of the full pitch width, while the ball is a live attacking
-# threat (see CPU_RESTING_SPEED_PX for the exception). Chosen empirically,
-# not guessed: simulating dozens of full 90s CPU-vs-CPU matches per
-# candidate value, after the goalkeeper's removal, found this was a
-# knife-edge parameter -- too low and both CPUs can't even reach the
-# resting kickoff ball (0-0 forever); too high and enough space opens up
-# in front of an undefended goal that scorelines rocket into the double
-# digits. A first pass landed on 0.20, which kept every match terminating
-# and single-digit per side on average, but left a long tail of
-# occasional teens-per-match blowouts on the high end -- outside the
-# sourced convention (the report: "typical scorelines are low single
-# digits (0-5)" per side, from martinlhw/Head_Soccer's first-to-5 games).
-# 0.19 tightened that tail considerably. Re-tuned again, down to 0.10,
-# after making the ball itself bouncier/floatier (BALL_GRAVITY/
-# BALL_RESTITUTION_GROUND above): a livelier ball reaches a slack
-# defensive line much faster than before, so the same advance fraction
-# that was safe for a heavier ball reopened the blowout tail once the
-# ball got livelier. 0.10 was the value found, together with the
-# retuned BALL_RESTITUTION_HEAD and KICK_IMPULSE_SPEED, by re-sweeping
-# candidates against 30+ simulated seeds and specifically tracking the
-# worst-case per-side score, not just the mean -- see tests/test_balance.py,
-# which locks in the tightened band as a regression guard.
-CPU_MAX_ADVANCE_FRACTION = 0.10
-# Below this perceived speed (px/sec) the ball is treated as having
-# stopped, not as a live attacking threat -- the defensive cap above is
-# lifted entirely so any CPU will always go and retrieve a dead ball
-# regardless of distance from its own goal. Without this, a ball that
-# happens to settle outside a CPU's advance limit (e.g. facing a human
-# who never moves at all) could never be reached by anyone and the match
-# would stall forever -- the exact failure mode this constant exists to
-# rule out.
-CPU_RESTING_SPEED_PX = 50.0
-# Anti-stalemate timeout, the same pattern this club already uses for
-# PacDawg's ghost-release anti-starvation timer: if *no one* has scored
-# for this many seconds of actual live play, every CPU temporarily
-# ignores CPU_MAX_ADVANCE_FRACTION entirely and chases the ball wherever
-# it is, exactly as if the ball had come to rest (see
-# CPU_RESTING_SPEED_PX above). Found necessary by simulation: an
-# otherwise-idle human can act as a stationary wall that, combined with
-# both CPUs' own defensive caution, occasionally kept a rally shuttling
-# back and forth near midfield without either side ever committing far
-# enough forward to actually score -- confirmed to persist for a full
-# simulated hour before this fix. This guarantees a match (and sudden
-# death specifically) always eventually resolves, without weakening the
-# defensive positioning during ordinary, actively-contested play.
-CPU_STALEMATE_SECONDS = 20.0
+# Still imperfect, but noise no longer dominates the 36px shot setup.
+CPU_AIM_ERROR_PX = 12.0
+CPU_MOVE_DEADZONE_PX = 8.0
+# Cache observed flight and opponent-rebound forecasts per observation.
+CPU_PREDICTION_SECONDS = 1.4
+CPU_PREDICTION_STEP = 1.0 / 30.0
+# Stay on the own-goal side of the ball for an outward header/foot strike.
+CPU_SHOT_SETUP_PX = 36.0
+CPU_THREAT_SPEED_PX = 80.0
+CPU_RECOVERY_ZONE_PX = 220.0
+CPU_RISING_SHOT_SPEED_PX = 120.0
+CPU_HEADER_MARGIN_PX = 4.0  # reject grazing forecasts sensitive to discrete timing
+# Jump timings derive from the unchanged human jump/body geometry.
+CPU_CROSS_MARGIN_PX = 8.0
+CPU_JUMP_RETRY_SECONDS = 0.18
+# Existing power action is useful for a controlled, distant/blocked attack;
+# urgent clearances use immediate normal kicks instead of waiting to charge.
+CPU_CONTROL_SPEED_PX = 140.0
+CPU_POWER_DISTANCE_PX = 220.0
 
 # --- HUD ---------------------------------------------------------------------------
 # A compact scoreboard panel replacing the old 110px dark band across the
@@ -441,10 +389,10 @@ EXIT_BUTTONS = (BUTTON_P1,)
 BACK_BUTTONS = (BUTTON_B,)
 
 # Per-player gameplay buttons (each read from that player's own joystick
-# device index -- see input.RawInput.device_buttons()). Two action buttons
-# at most, exactly as the client asked for: A to jump, X to kick.
-BUTTON_JUMP = BUTTON_A
+# device index -- see input.RawInput.device_buttons()).
+BUTTON_JUMP = BUTTON_Y
 BUTTON_KICK = BUTTON_X
+BUTTON_POWER = BUTTON_A
 
 JOYSTICK_AXIS_X = 0
 JOYSTICK_AXIS_Y = 1

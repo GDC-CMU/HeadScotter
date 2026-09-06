@@ -85,11 +85,11 @@ character faces left.
 | `scotty_idle.png` | 78x96 | Scotty (P1 / 1P human), standing still |
 | `scotty_run_1.png`, `scotty_run_2.png` | 78x96 | Scotty running -- two-frame leg cycle |
 | `scotty_jump.png` | 78x96 | Scotty airborne (jumping or falling) |
-| `scotty_kick.png` | 78x96 | Scotty, briefly, right after a kick connects |
+| `scotty_kick.png` | 78x96 | Scotty, briefly, on a kick attempt (including a miss) |
 | `rival_idle.png` | 78x96 | The rival (CPU / P2), standing still |
 | `rival_run_1.png`, `rival_run_2.png` | 78x96 | The rival running |
 | `rival_jump.png` | 78x96 | The rival airborne |
-| `rival_kick.png` | 78x96 | The rival, briefly, right after a kick connects |
+| `rival_kick.png` | 78x96 | The rival, briefly, on a kick attempt (including a miss) |
 
 **Scotty** is CMU's mascot, a Scottish Terrier, and is drawn to actually
 read as one: a dark, shaggy coat, two erect pointed ears (not floppy),
@@ -139,8 +139,8 @@ size -- taller than a standing player (`GOAL_MOUTH_HEIGHT` is ~2.35x
 hold down scoring. There is no goalkeeper anywhere in this game (see the
 project's genre research report: no side-view head-soccer implementation
 has one) -- each player defends their own goal directly; see
-`headscotter/cpu.py`'s `CPU_MAX_ADVANCE_FRACTION` for how the CPU
-opponent's defensive positioning does that job instead.
+`headscotter/cpu.py` for how the CPU predicts reachable interceptions and
+recovers against actual goal threats using the same field-player body.
 
 ## HUD
 
@@ -158,7 +158,7 @@ any sound, overwrite the file at the same path with the same name; no
 code changes are required.**
 
 Audio is entirely optional and degrades silently: if no audio device is
-available or `pygame.mixer` fails to initialise for any reason, the game
+available or `pygame.mixer` encounters a device/driver error, the game
 prints one warning to stderr and keeps running with no sound at all --
 the cabinet must never fail to boot a game because of audio. Sound is
 only ever turned on by the real game loop (`Game.init_display()`);
@@ -176,10 +176,10 @@ python tools/generate_sounds.py
 
 | File | Used for |
 |---|---|
-| `kick.wav` | An ordinary kick connecting (`players.update_kick()`, a quick tap-and-release). |
+| `kick.wav` | An ordinary kick connecting (`players.normal_kick()`, on a fresh press), or a lightly charged power release. |
 | `power_shot.wav` | A charged power shot connecting -- see "Power shot" below. Distinct from, and more dramatic than, an ordinary kick. |
-| `bounce.wav` | The ball bouncing off the ground, a wall, or the ceiling (`physics.step_ball()`'s `on_bounce` hook). |
-| `header.wav` | The ball bouncing off a player's head (`players.apply_head_collision()`). |
+| `bounce.wav` | A new incoming impact against ground/wall/ceiling, not floor support, rolling or separation (`physics.step_ball()`'s `on_bounce` hook). |
+| `header.wav` | A new incoming head impact (`players.apply_head_collision()`'s impact hook), not overlap correction. Repeated substep corrections share one contact episode. |
 | `goal.wav` | A goal is scored. |
 | `whistle.wav` | Kickoff (the opening whistle and every restart after a goal) and full time. |
 | `menu_move.wav` | Moving the menu selection up or down. |
@@ -187,19 +187,18 @@ python tools/generate_sounds.py
 
 ## Power shot
 
-Holding the kick control charges a power shot; releasing it fires, with
+Holding A (keyboard C / Right Shift) charges a power shot; releasing it fires, with
 strength interpolated continuously between an ordinary kick (an
 immediate tap-and-release) and a full power shot (held for
-`config.POWER_SHOT_CHARGE_SECONDS`) -- see `players.update_kick()`. A
+`config.POWER_SHOT_CHARGE_SECONDS`) -- see `players.update_power_shot()`. A
 small charge meter appears above a charging player's head
 (`render._draw_charge_indicator()`) so the mechanic is discoverable
 without a tutorial; it is drawn procedurally (a simple bar, like the
 HUD's score/clock text), not a sprite, since it is dynamic gameplay
 feedback rather than art. A fully-charged shot costs extra recovery time
-(`config.POWER_SHOT_COOLDOWN_BONUS_SECONDS`) on top of an ordinary
-kick's cooldown, so it cannot simply replace ordinary kicking. The hook
-for later per-character special abilities is deliberately left open;
-none are built yet.
+(`config.POWER_SHOT_COOLDOWN_BONUS_SECONDS`) on top of its base recovery.
+Normal X presses do not share that cooldown. Pausing cancels any uncommitted
+charge, so an old release cannot fire on resume.
 
 ## Adding a brand-new sprite
 

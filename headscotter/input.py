@@ -37,6 +37,19 @@ class RawInput:
     #: Per-device button sets, ordered by device index -- used for
     #: per-player match controls, where the device matters.
     buttons_by_device: Tuple[FrozenSet[int], ...] = field(default_factory=tuple)
+    # Genuine down edges collected by the event pump. Tuples retain multiple
+    # taps, even down/up/down/up within one render frame. Held state alone
+    # cannot represent those. Device ordering matches buttons_by_device.
+    key_downs: Tuple[str, ...] = ()
+    button_downs_by_device: Tuple[Tuple[int, ...], ...] = ()
+
+    @property
+    def active_keys(self) -> FrozenSet[str]:
+        return self.pressed_keys | frozenset(self.key_downs)
+
+    @property
+    def active_buttons(self) -> FrozenSet[int]:
+        return self.pressed_buttons.union(*self.buttons_by_device, *self.button_downs_by_device)
 
     def device_axis(self, index: int) -> Tuple[float, float]:
         if 0 <= index < len(self.axes):
@@ -68,6 +81,8 @@ P2_JUMP_KEYS = frozenset({"up"})
 # "/" is P2's literal "x"-equivalent -- an easy-to-reach action key next
 # to the arrow cluster P2's movement/jump already use.
 P2_KICK_KEYS = frozenset({"down", "/"})
+P1_POWER_KEYS = frozenset({"c"})
+P2_POWER_KEYS = frozenset({"right shift"})
 
 MENU_UP_KEYS = frozenset({"up", "w"})
 # "s" here and in P1_KICK_KEYS above is a deliberate, safe overlap, not a
@@ -184,10 +199,11 @@ def resolve_menu_direction(raw: RawInput) -> Optional[MenuDirection]:
     return None
 
 
-def wants_confirm(raw: RawInput) -> bool:
-    if raw.pressed_keys & CONFIRM_KEYS:
+def wants_confirm(raw: RawInput, paused: bool = False) -> bool:
+    if raw.active_keys & CONFIRM_KEYS:
         return True
-    return bool(raw.pressed_buttons & set(config.CONFIRM_BUTTONS))
+    buttons = {config.BUTTON_START} if paused else set(config.CONFIRM_BUTTONS)
+    return bool(raw.active_buttons & buttons)
 
 
 def wants_go_back(raw: RawInput) -> bool:
@@ -195,9 +211,9 @@ def wants_go_back(raw: RawInput) -> bool:
     (5), or button B (0) -- all exactly equivalent everywhere in the
     game. See Game.maybe_go_back() for what "back" resolves to on each
     screen."""
-    if raw.pressed_keys & BACK_KEYS:
+    if raw.active_keys & BACK_KEYS:
         return True
-    return bool(raw.pressed_buttons & (set(config.EXIT_BUTTONS) | set(config.BACK_BUTTONS)))
+    return bool(raw.active_buttons & (set(config.EXIT_BUTTONS) | set(config.BACK_BUTTONS)))
 
 
 def any_genuine_input(raw: RawInput) -> bool:
@@ -215,4 +231,95 @@ def any_genuine_input(raw: RawInput) -> bool:
         return True
     if wants_jump_single(raw) or wants_kick_single(raw):
         return True
-    return False
+    return bool(raw.active_keys or raw.active_buttons)
+
+
+@dataclass(frozen=True)
+class PlayerActions:
+    normal_kicks: int = 0
+    jump: bool = False
+    power_held: bool = False
+    power_tap: bool = False
+    power_released: bool = False
+
+
+def _held_sources(raw: RawInput) -> set:
+    return {(-1, key) for key in raw.pressed_keys} | {
+        (index, button) for index, buttons in enumerate(raw.buttons_by_device) for button in buttons
+    }
+
+
+def _down_sources(raw: RawInput) -> list:
+    return [(-1, key) for key in raw.key_downs] + [
+        (index, button) for index, buttons in enumerate(raw.button_downs_by_device) for button in buttons
+    ]
+
+
+class ActionTracker:
+    """Per-source action edges and release-to-arm guards.
+
+    A held X on one device never masks a fresh X on another device (or a
+    keyboard alias). Power charges belong to the source that began them;
+    another held source cannot conceal its release or inherit its charge.
+    """
+
+    def __init__(self):
+        self.held = set()
+        self.blocked = set()
+        self.power_owners = [None, None]
+
+    def suspend(self, raw: RawInput) -> None:
+        self.held = _held_sources(raw)
+        self.blocked = self.held | set(_down_sources(raw))
+        self.power_owners = [None, None]
+
+    def sample(self, raw: RawInput, single_player: bool = False) -> Tuple[PlayerActions, PlayerActions]:
+        held = _held_sources(raw)
+        downs = _down_sources(raw)
+        # Hardware only emits genuine down edges (repeat is filtered). A
+        # previously blocked source with a new edge has physically released,
+        # even if up/down were both polled in this frame.
+        self.blocked.difference_update(downs)
+        # Event edges are authoritative, but plain RawInput snapshots remain
+        # useful to tests/tools. Don't double-count a down also seen as held.
+        presses = downs + sorted(held - self.held - set(downs))
+        presses = [source for source in presses if source not in self.blocked]
+        available = held - self.blocked
+        self.blocked.intersection_update(held)
+        self.held = held
+
+        results = []
+        for index in range(2):
+            if single_player and index == 1:
+                results.append(PlayerActions())  # the right side is CPU-owned
+                continue
+            def sources(button, keys1, keys2):
+                keys = (keys1 | keys2) if single_player and index == 0 else (keys1 if index == 0 else keys2)
+                devices = range(max(len(raw.buttons_by_device), len(raw.button_downs_by_device))) if (
+                    single_player and index == 0
+                ) else (index,)
+                return {(-1, key) for key in keys} | {(device, button) for device in devices}
+
+            kicks = sources(config.BUTTON_KICK, P1_KICK_KEYS, P2_KICK_KEYS)
+            jumps = sources(config.BUTTON_JUMP, P1_JUMP_KEYS, P2_JUMP_KEYS)
+            powers = sources(config.BUTTON_POWER, P1_POWER_KEYS, P2_POWER_KEYS)
+            owner = self.power_owners[index]
+            tap = False
+            released = owner is not None and (owner not in available or owner in downs)
+            if owner is not None and owner not in available:
+                # Release the original charge this frame, even if a different
+                # device is now holding A. A new source may charge next frame.
+                owner = None
+            elif owner is None:
+                candidates = sorted(available & powers)
+                owner = candidates[0] if candidates else None
+                tap = owner is None and any(source in powers for source in presses)
+            self.power_owners[index] = owner
+            results.append(PlayerActions(
+                normal_kicks=sum(source in kicks for source in presses),
+                jump=bool((available | set(presses)) & jumps),
+                power_held=owner is not None,
+                power_tap=tap,
+                power_released=released,
+            ))
+        return tuple(results)
