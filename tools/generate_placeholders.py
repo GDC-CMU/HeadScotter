@@ -216,25 +216,34 @@ def _scotty_head(surf, cx, head_cy, radius, mouth_open):
             1,
         )
 
-    # Rectangular beard/muzzle -- a hard-edged block, not an ellipse --
-    # jutting forward, the second defining Scottie feature.
+    # Beard/muzzle -- a soft, rounded capsule jutting forward, not a
+    # hard-edged block: at cabinet scale a rectangle with horizontal
+    # texture lines read as a crate or a camera lens rather than a
+    # dog's face. Fully-rounded ends (border_radius = half the height)
+    # give the pill-shaped snout silhouette instead, and a single dark
+    # nose at the tip -- not grille lines -- is what actually reads as
+    # a beard. This is the second defining Scottie feature.
     beard_w, beard_h = radius * 1.05, radius * 0.62
     beard_rect = pygame.Rect(0, 0, beard_w, beard_h)
     beard_rect.midleft = (cx + radius * 0.35, head_cy + radius * 0.32)
-    pygame.draw.rect(surf, SCOTTY_COAT, beard_rect, border_radius=2)
-    pygame.draw.rect(surf, SCOTTY_OUTLINE, beard_rect, 1, border_radius=2)
-    # A lighter chin-tip and a couple of whisker dashes for texture.
-    pygame.draw.rect(
-        surf, SCOTTY_COAT_HI,
-        (beard_rect.right - radius * 0.22, beard_rect.top + 2, radius * 0.2, beard_rect.height - 4),
-    )
-    for i in range(2):
-        wy = beard_rect.top + 4 + i * 6
-        pygame.draw.line(surf, SCOTTY_OUTLINE, (beard_rect.left + 3, wy), (beard_rect.left + beard_w * 0.55, wy), 1)
+    beard_radius = round(beard_h * 0.5)
+    pygame.draw.rect(surf, SCOTTY_COAT, beard_rect, border_radius=beard_radius)
+    pygame.draw.rect(surf, SCOTTY_OUTLINE, beard_rect, 1, border_radius=beard_radius)
+    # A soft highlight along the top for shape, not texture.
+    highlight_rect = pygame.Rect(0, 0, beard_w * 0.62, beard_h * 0.34)
+    highlight_rect.midleft = (beard_rect.left + beard_w * 0.14, beard_rect.top + beard_h * 0.3)
+    pygame.draw.ellipse(surf, SCOTTY_COAT_HI, highlight_rect)
 
-    nose_x = beard_rect.right - radius * 0.08
-    nose_y = beard_rect.centery - radius * 0.1
-    pygame.draw.circle(surf, (18, 14, 12), (round(nose_x), round(nose_y)), max(2, round(radius * 0.13)))
+    # A single, prominent dark nose at the muzzle's forward tip -- the
+    # feature a rounded, unmarked snout actually needs to read as a face.
+    nose_x = beard_rect.right - radius * 0.14
+    nose_y = beard_rect.centery
+    nose_r = max(3, round(radius * 0.18))
+    pygame.draw.circle(surf, (14, 11, 9), (round(nose_x), round(nose_y)), nose_r)
+    pygame.draw.circle(
+        surf, (58, 50, 44),
+        (round(nose_x - nose_r * 0.35), round(nose_y - nose_r * 0.35)), max(1, round(nose_r * 0.35)),
+    )
 
     if mouth_open:
         pygame.draw.arc(
@@ -244,7 +253,10 @@ def _scotty_head(surf, cx, head_cy, radius, mouth_open):
         )
 
     # Bushy eyebrow -- a thick tuft above the eye, the third defining
-    # Scottie feature, then the eye itself underneath it.
+    # Scottie feature, then a round eye with a real pupil underneath.
+    # Sized deliberately larger than a bare-minimum dot: at radius <= 3
+    # px, pygame's circle rasteriser produces a blocky diamond rather
+    # than a circle, which is exactly what read as "a gem" before.
     eye_x = cx + radius * 0.30
     eye_y = head_cy - radius * 0.05
     for dx in (-3, 0, 3):
@@ -253,8 +265,16 @@ def _scotty_head(surf, cx, head_cy, radius, mouth_open):
             (eye_x - radius * 0.32 + dx, eye_y - radius * 0.42),
             (eye_x + radius * 0.10 + dx, eye_y - radius * 0.30), 2,
         )
-    pygame.draw.circle(surf, (250, 246, 238), (round(eye_x), round(eye_y)), max(3, round(radius * 0.2)))
-    pygame.draw.circle(surf, (22, 18, 14), (round(eye_x), round(eye_y)), max(1, round(radius * 0.09)))
+    sclera_r = max(6, round(radius * 0.30))
+    pupil_r = max(4, round(radius * 0.17))
+    pupil_x = eye_x + sclera_r * 0.15
+    pygame.draw.circle(surf, (250, 246, 238), (round(eye_x), round(eye_y)), sclera_r)
+    pygame.draw.circle(surf, SCOTTY_OUTLINE, (round(eye_x), round(eye_y)), sclera_r, 1)
+    pygame.draw.circle(surf, (24, 20, 16), (round(pupil_x), round(eye_y)), pupil_r)
+    pygame.draw.circle(
+        surf, (255, 255, 255),
+        (round(pupil_x - pupil_r * 0.35), round(eye_y - pupil_r * 0.35)), max(1, round(pupil_r * 0.35)),
+    )
 
 
 def make_scotty(size, pose, leg_phase=0):
