@@ -1,28 +1,26 @@
 """Regression guard for match-scoring balance.
 
-This is what caught, and now locks in the fix for, a very real bug: an
-earlier build's goal was so large (and nothing defended it) that a single
-simulated 90-second CPU-vs-CPU match finished 31-28 -- roughly a goal
-every 1.5 seconds. A first fix shrank the goal itself, which fixed the
-score but broke the goal's *look* (barely half a player's height, reading
-as a small crate rather than a net). The final fix restores a
-visually-credible goal size and instead holds the score down with an
-actual goalkeeper (see headscotter/keeper.py and config.py:
-GOAL_MOUTH_HEIGHT, KEEPER_*, CPU_MAX_ADVANCE_FRACTION,
-BALL_RESTITUTION_HEAD, CPU_RESTING_SPEED_PX, CPU_STALEMATE_SECONDS) --
-grounded in real references (real football's goal-to-player-height
-ratio; how 2D "head soccer" clones size a credible-looking goal and
-position a keeper) and then driven the rest of the way by simulating
-full matches and measuring the result, not tuned by eye. This module
+The genre has no goalkeeper (confirmed across every reference
+implementation in the project's genre research report) -- each player,
+human or CPU, defends their own goal directly, with a real, visually
+credible goal size (GOAL_MOUTH_HEIGHT, ~0.33 * screen height, taller than
+a standing player -- sourced from the reference implementation that runs
+at this project's exact 800x600 resolution). Without a keeper as a last
+line of defense, defense is held entirely by the CPU's own positioning
+discipline (CPU_MAX_ADVANCE_FRACTION), ball feel (BALL_RESTITUTION_HEAD,
+KICK_IMPULSE_SPEED), and the anti-stalemate/anti-blowout guards
+(CPU_RESTING_SPEED_PX, CPU_STALEMATE_SECONDS) -- tuned by simulating full
+CPU-vs-CPU matches and measuring the result, not by eye. This module
 re-runs that same measurement on every test run, so a change to any of
 those constants that lets scoring drift back into "meaningless
-scoreboard" territory (in *either* direction: unwatchable blowouts, or a
-keeper so good nobody can ever score) fails loudly here instead of only
+scoreboard" territory (in *either* direction: unwatchable blowouts, or
+defense so good nobody can ever score) fails loudly here instead of only
 being noticed by someone watching a preview clip.
 
-Also confirms sudden death itself always terminates: with a much smaller
-goal, a tied match staying tied became a real possibility, and this
-locks in that it still always resolves within a generous, bounded budget.
+Also confirms sudden death itself always terminates: with no keeper and
+a smaller defensive leash than before, a tied match staying tied is a
+real possibility, and this locks in that it still always resolves within
+a generous, bounded budget.
 """
 from __future__ import annotations
 
@@ -36,12 +34,11 @@ from headscotter.input import RawInput
 
 # Plausible per the client's brief: "somewhere around 3-10 goals total"
 # for a full match, i.e. comfortably single digits per side. Set with
-# generous headroom above the actually-observed simulated range (150
-# simulated seeds with the restored goal size and the keeper in place
-# gave totals of 2-7 and a max of 7 on either side -- see the constants'
-# own comments in config.py) so this doesn't flake on ordinary variance,
-# while still catching a regression back toward the old ~30-goals-a-side
-# failure mode by a wide margin.
+# generous headroom above the actually-observed simulated range (20
+# simulated seeds with the current constants gave totals of 4-15 and a
+# max of 13 on either side -- see the constants' own comments in
+# config.py) so this doesn't flake on ordinary variance, while still
+# catching a regression back toward an implausible blowout by a wide margin.
 MAX_GOALS_PER_SIDE = 15
 MAX_TOTAL_GOALS = 25
 MIN_ACCEPTABLE_AVERAGE_TOTAL = 1.0

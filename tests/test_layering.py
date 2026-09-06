@@ -14,7 +14,6 @@ PURE_MODULES = (
     "physics.py",
     "players.py",
     "cpu.py",
-    "keeper.py",
     "match.py",
     "input.py",
 )

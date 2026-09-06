@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Set
 
 import pygame
 
-from . import config, cpu, input as input_mod, keeper as keeper_mod, match as match_mod, physics, players
+from . import config, cpu, input as input_mod, match as match_mod, physics, players
 from .input import RawInput
 
 
@@ -66,10 +66,6 @@ class Game:
         self.player_right: Optional[players.Player] = None
         self.cpu_left: Optional[cpu.CPUController] = None
         self.cpu_right: Optional[cpu.CPUController] = None
-        # Every goal has its own automated keeper, in every mode -- never
-        # human- or CPU-field-player-controlled. See keeper.py.
-        self.keeper_left: Optional[keeper_mod.Keeper] = None
-        self.keeper_right: Optional[keeper_mod.Keeper] = None
         # Anti-stalemate timer (config.CPU_STALEMATE_SECONDS): seconds of
         # live play since the last goal (or kickoff). Reset on every goal
         # and every fresh match; once it crosses the threshold, every CPU
@@ -136,13 +132,11 @@ class Game:
             self.cpu_left.reset()
         if self.cpu_right is not None:
             self.cpu_right.reset()
-        self.keeper_left = keeper_mod.new_keeper(config.PITCH_LEFT)
-        self.keeper_right = keeper_mod.new_keeper(config.PITCH_RIGHT)
         self._seconds_since_goal = 0.0
 
     def _reset_positions(self) -> None:
-        """Put both players, both keepers, and the ball back at kickoff,
-        without touching the score or clock -- used after every goal."""
+        """Put both players and the ball back at kickoff, without
+        touching the score or clock -- used after every goal."""
         self.player_left.x = config.PITCH_LEFT + config.PLAYER_START_INSET
         self.player_left.y = config.GROUND_Y
         self.player_left.vy = 0.0
@@ -164,8 +158,6 @@ class Game:
             self.cpu_left.reset()
         if self.cpu_right is not None:
             self.cpu_right.reset()
-        keeper_mod.reset_keeper(self.keeper_left)
-        keeper_mod.reset_keeper(self.keeper_right)
         self._seconds_since_goal = 0.0
 
     # -- pure per-frame update --------------------------------------------------
@@ -295,29 +287,10 @@ class Game:
         players.update_player(self.player_right, dt, move_r, jump_r)
 
         # Keep the two field-player bodies from interpenetrating -- after
-        # both have moved for the frame, before either the keepers move
-        # or any ball interaction, so everything below resolves from an
-        # already-legal, separated position.
+        # both have moved for the frame and before any ball interaction,
+        # so everything below resolves from an already-legal, separated
+        # position.
         players.separate_players(self.player_left, self.player_right)
-
-        # Keepers react to wherever the ball was left at the end of the
-        # previous frame (their own reaction lag already accounts for
-        # this) and move accordingly -- before any player-keeper
-        # separation or ball interaction this frame.
-        keeper_mod.update_keeper(self.keeper_left, dt, self.ball, self.rng)
-        keeper_mod.update_keeper(self.keeper_right, dt, self.ball, self.rng)
-
-        # Now that every body has finished moving for the frame, keep a
-        # field player from standing inside a keeper -- one-sided (only
-        # the player is pushed; the keeper is a paddle pinned to its own
-        # goal line and must never be shoved off it, or a player could
-        # drag it out of the goal and walk the ball in). A player can in
-        # principle wander deep enough to reach either keeper, so check
-        # both against both.
-        players.separate_player_from_keeper(self.player_left, self.keeper_left.x, self.keeper_left.y)
-        players.separate_player_from_keeper(self.player_left, self.keeper_right.x, self.keeper_right.y)
-        players.separate_player_from_keeper(self.player_right, self.keeper_left.x, self.keeper_left.y)
-        players.separate_player_from_keeper(self.player_right, self.keeper_right.x, self.keeper_right.y)
 
         # A successful kick and the passive header bounce are mutually
         # exclusive in the same frame for the same player -- otherwise a
@@ -329,12 +302,6 @@ class Game:
             players.apply_head_collision(self.player_left, self.ball)
         if not kicked_r:
             players.apply_head_collision(self.player_right, self.ball)
-
-        # The keepers get the last save opportunity before the ball's own
-        # goal-line check below -- exactly like a real keeper facing a
-        # shot that's already been struck.
-        keeper_mod.apply_keeper_collision(self.keeper_left, self.ball)
-        keeper_mod.apply_keeper_collision(self.keeper_right, self.ball)
 
         event = physics.step_ball(self.ball, dt)
         if event == "left_goal":
