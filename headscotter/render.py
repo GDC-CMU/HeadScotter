@@ -18,6 +18,7 @@ so gameplay elements always render on top of the goal art, never behind it.
 """
 from __future__ import annotations
 
+import math
 from typing import Tuple
 
 import pygame
@@ -58,17 +59,24 @@ def _format_clock(seconds: float) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
+def _lerp_color(c0, c1, t):
+    t = max(0.0, min(1.0, t))
+    return tuple(round(a + (b - a) * t) for a, b in zip(c0, c1))
+
+
 def draw_frame(screen, game: Game) -> None:
     if game.state is GameState.ATTRACT:
         _draw_menu_background(screen)
         _draw_menu(screen, game)
     elif game.state is GameState.HOW_TO_PLAY:
         _draw_menu_background(screen)
-        _draw_how_to_play(screen)
+        _draw_how_to_play(screen, game)
     elif game.state in (GameState.MATCH, GameState.DEMO):
         _draw_stage(screen, game)
         _draw_goals(screen)
         _draw_players(screen, game)
+        _draw_charge_indicator(screen, game.player_left)
+        _draw_charge_indicator(screen, game.player_right)
         _draw_ball(screen, game)
         _draw_hud(screen, game)
         _draw_phase_banner(screen, game)
@@ -151,6 +159,34 @@ def _draw_players(screen, game: Game) -> None:
         screen.blit(surface, rect)
 
 
+_CHARGE_BAR_WIDTH = 44
+_CHARGE_BAR_HEIGHT = 7
+_CHARGE_BAR_COLOR_LOW = (255, 210, 90)
+_CHARGE_BAR_COLOR_HIGH = (240, 60, 60)
+
+
+def _draw_charge_indicator(screen, player) -> None:
+    """A small meter above a charging player's head, so the power-shot
+    mechanic (hold kick to charge, release to strike -- see
+    players.update_kick()/config.POWER_SHOT_*) is discoverable without a
+    tutorial. Only visible while that player is actually charging."""
+    if player.kick_charge <= 0.0:
+        return
+
+    head_top = player.y - config.HEAD_OFFSET_Y - config.HEAD_RADIUS
+    rect = pygame.Rect(0, 0, _CHARGE_BAR_WIDTH, _CHARGE_BAR_HEIGHT)
+    rect.midbottom = (round(player.x), round(head_top) - 8)
+
+    pygame.draw.rect(screen, (20, 20, 24), rect, border_radius=3)
+    fraction = player.charge_fraction
+    fill_width = round(_CHARGE_BAR_WIDTH * fraction)
+    if fill_width > 0:
+        fill_rect = pygame.Rect(rect.left, rect.top, fill_width, _CHARGE_BAR_HEIGHT)
+        color = _lerp_color(_CHARGE_BAR_COLOR_LOW, _CHARGE_BAR_COLOR_HIGH, fraction)
+        pygame.draw.rect(screen, color, fill_rect, border_radius=3)
+    pygame.draw.rect(screen, (245, 245, 245), rect, 1, border_radius=3)
+
+
 def _draw_ball(screen, game: Game) -> None:
     ball = game.ball
     surface = assets.get("ball")
@@ -224,8 +260,17 @@ def _draw_menu_background(screen) -> None:
 
 
 def _draw_menu(screen, game: Game) -> None:
-    _draw_text(screen, "HEADSCOTTER", 68, HUD_ACCENT_COLOR, (config.SCREEN_WIDTH // 2, 130))
-    _draw_text(screen, "HEAD SOCCER, CMU STYLE", 24, HUD_TEXT_COLOR, (config.SCREEN_WIDTH // 2, 185))
+    # A subtle pulse on the title/accent, driven by the free-running
+    # attract clock -- cheap, but it's what separates "attract screen"
+    # from "static splash image". No tagline: the title and the two
+    # rivals facing off below carry the screen, which is what the genre
+    # actually does -- a slogan under the logo said nothing useful.
+    pulse = (math.sin(game.attract_clock * 2.0) + 1.0) / 2.0
+    title_color = _lerp_color(HUD_ACCENT_COLOR, (255, 244, 214), pulse * 0.5)
+    _draw_text(screen, "HEADSCOTTER", 68, title_color, (config.SCREEN_WIDTH // 2, 130))
+    accent_rect = pygame.Rect(0, 0, round(220 + 30 * pulse), 4)
+    accent_rect.center = (config.SCREEN_WIDTH // 2, 168)
+    pygame.draw.rect(screen, title_color, accent_rect, border_radius=2)
 
     top = 280
     spacing = 62
@@ -235,22 +280,37 @@ def _draw_menu(screen, game: Game) -> None:
         label = f"> {item} <" if selected else item
         _draw_text(screen, label, 40 if selected else 34, color, (config.SCREEN_WIDTH // 2, top + index * spacing))
 
-    _draw_menu_rivals(screen)
+    _draw_menu_rivals(screen, game)
 
-    _draw_text(
-        screen, "STICK: MOVE    A: SELECT / JUMP    X: KICK    P1: BACK", 20, HUD_DIM_COLOR,
-        (config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT - 30),
-    )
+    lines = _control_legend_lines(game)
+    base_y = config.SCREEN_HEIGHT - 30 if len(lines) == 1 else config.SCREEN_HEIGHT - 42
+    for i, line in enumerate(lines):
+        _draw_text(screen, line, 20, HUD_DIM_COLOR, (config.SCREEN_WIDTH // 2, base_y + i * 22))
+
+
+def _control_legend_lines(game: Game):
+    """The bottom-of-screen control summary, adapted to whatever input
+    device is actually in use -- the arcade cabinet's stick/button names
+    when a real joystick is connected, keyboard key names otherwise (a
+    dev laptop with none attached). Never hard-code one or the other."""
+    if game.has_joysticks:
+        return ["STICK: MOVE    A: SELECT / JUMP    X: KICK    P1: BACK"]
+    return [
+        "ARROWS OR WASD: MOVE    ENTER: SELECT",
+        "W/UP: JUMP    X OR S: KICK    ESC: BACK",
+    ]
 
 
 _MENU_PORTRAIT_SCALE = 1.9
 
 
-def _draw_menu_rivals(screen) -> None:
+def _draw_menu_rivals(screen, game: Game) -> None:
     """The two characters facing off at the foot of the menu -- head-
     soccer menus almost always show the two rivals this way, and it
     sells what the sprites actually look like immediately, rather than
-    only ever being seen small and in motion during a match."""
+    only ever being seen small and in motion during a match. A gentle,
+    out-of-phase idle bob (driven by the free-running attract clock)
+    keeps the screen visibly alive rather than a static splash image."""
     scotty = assets.get("scotty_idle")
     rival = pygame.transform.flip(assets.get("rival_idle"), True, False)
 
@@ -263,18 +323,30 @@ def _draw_menu_rivals(screen) -> None:
     )
 
     feet_y = config.SCREEN_HEIGHT - 105
-    screen.blit(scotty_big, scotty_big.get_rect(midbottom=(90, feet_y)))
-    screen.blit(rival_big, rival_big.get_rect(midbottom=(config.SCREEN_WIDTH - 90, feet_y)))
+    bob_scotty = math.sin(game.attract_clock * 3.0) * 4.0
+    bob_rival = math.sin(game.attract_clock * 3.0 + math.pi) * 4.0
+    screen.blit(scotty_big, scotty_big.get_rect(midbottom=(90, round(feet_y + bob_scotty))))
+    screen.blit(rival_big, rival_big.get_rect(midbottom=(config.SCREEN_WIDTH - 90, round(feet_y + bob_rival))))
 
 
-def _draw_how_to_play(screen) -> None:
+def _draw_how_to_play(screen, game: Game) -> None:
     _draw_text(screen, "HOW TO PLAY", 52, HUD_ACCENT_COLOR, (config.SCREEN_WIDTH // 2, 80))
+    if game.has_joysticks:
+        move_line = "STICK LEFT/RIGHT   move"
+        jump_line = "A                  jump"
+        kick_line = "X                  kick -- hold to charge a power shot, release to strike"
+        back_line = "P1 / Esc: back"
+    else:
+        move_line = "ARROWS OR A/D      move"
+        jump_line = "W OR UP            jump"
+        kick_line = "X OR S             kick -- hold to charge a power shot, release to strike"
+        back_line = "Esc: back"
     lines = [
         "Knock the ball into the other goal more times than they knock it into yours.",
         "",
-        "STICK LEFT/RIGHT   move",
-        "A                  jump",
-        "X                  kick the ball when it's right in front of you",
+        move_line,
+        jump_line,
+        kick_line,
         "",
         "There is no goalkeeper -- you defend your own goal.",
         "",
@@ -283,7 +355,7 @@ def _draw_how_to_play(screen) -> None:
         "1 PLAYER is you against the CPU. 2 PLAYERS is head to head --",
         "stick 1 controls the left player, stick 2 controls the right player.",
         "",
-        "P1 / Esc: back",
+        back_line,
     ]
     y = 160
     for line in lines:
