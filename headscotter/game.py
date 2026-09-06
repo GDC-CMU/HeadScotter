@@ -1,13 +1,14 @@
 """The HeadScotter state machine: attract -> menu -> match -> result -> ... .
 
-This is one of the three modules (with :mod:`headscotter.render` and
-:mod:`headscotter.assets`) allowed to import pygame, since it owns the
-real event loop, hardware polling, and timing. All of the actual rules
-(physics, match scoring, CPU behaviour) live in the pure modules and are
-simply orchestrated here.
+This is one of the four modules (with :mod:`headscotter.render`,
+:mod:`headscotter.assets`, and :mod:`headscotter.audio`) allowed to
+import pygame, since it owns the real event loop, hardware polling, and
+timing. All of the actual rules (physics, match scoring, CPU behaviour)
+live in the pure modules and are simply orchestrated here.
 """
 from __future__ import annotations
 
+import math
 import random
 import sys
 from enum import Enum, auto
@@ -15,7 +16,7 @@ from typing import Dict, List, Optional, Set
 
 import pygame
 
-from . import config, cpu, input as input_mod, match as match_mod, physics, players
+from . import audio, config, cpu, input as input_mod, match as match_mod, physics, players
 from .input import RawInput
 
 
@@ -57,6 +58,11 @@ class Game:
         # Reset to 0 every time ATTRACT is (re)entered, so it always
         # re-arms for another full idle period.
         self._menu_idle_seconds = 0.0
+        # Purely cosmetic, free-running clock for attract-screen animation
+        # (the menu portraits' idle bob -- see render._draw_menu_rivals())
+        # -- accumulated every update() call regardless of state, never
+        # reset, and never read by any gameplay logic.
+        self.attract_clock = 0.0
 
         # Match state -- None until a match/demo actually starts.
         self.mode: Optional[str] = None  # "1P", "2P", or "DEMO"
@@ -73,6 +79,10 @@ class Game:
         # prolonged deadlock (e.g. against a human who never moves at
         # all) always eventually resolves. See _step_gameplay().
         self._seconds_since_goal = 0.0
+        # Toggled every gameplay frame -- see _step_gameplay()'s note on
+        # why a perfectly symmetric CPU-vs-CPU tie must not always be
+        # resolved in the same player's favour.
+        self._priority_swap = False
 
         # Result screen.
         self.result_winner: Optional[str] = None
@@ -143,6 +153,8 @@ class Game:
         self.player_left.on_ground = True
         self.player_left.moving = False
         self.player_left.kick_cooldown = 0.0
+        self.player_left.kick_charge = 0.0
+        self.player_left.kick_pose_timer = 0.0
         self.player_left.facing = 1
 
         self.player_right.x = config.PITCH_RIGHT - config.PLAYER_START_INSET
@@ -151,6 +163,8 @@ class Game:
         self.player_right.on_ground = True
         self.player_right.moving = False
         self.player_right.kick_cooldown = 0.0
+        self.player_right.kick_charge = 0.0
+        self.player_right.kick_pose_timer = 0.0
         self.player_right.facing = -1
 
         self.ball = physics.new_kickoff_ball()
@@ -162,6 +176,7 @@ class Game:
 
     # -- pure per-frame update --------------------------------------------------
     def update(self, dt: float, raw: RawInput) -> None:
+        self.attract_clock += dt
         if self._input_settle_remaining > 0.0:
             self._input_settle_remaining = max(0.0, self._input_settle_remaining - dt)
 
@@ -198,13 +213,26 @@ class Game:
             return
 
     # -- main menu ----------------------------------------------------------------
+    @property
+    def has_joysticks(self) -> bool:
+        """Whether any real joystick is currently connected -- used only
+        to pick which control legend render.py shows (arcade button
+        names on the cabinet, keyboard key names on a dev laptop with
+        none attached). Never true in headless tests or the build-time
+        preview/placeholder tools, since neither ever calls
+        init_display()."""
+        return bool(self.joysticks)
+
     def _update_menu(self, raw: RawInput) -> None:
         direction = self._menu_direction_pressed(raw)
         if direction is input_mod.MenuDirection.UP:
             self.menu_index = (self.menu_index - 1) % len(MENU_ITEMS)
+            audio.play("menu_move")
         elif direction is input_mod.MenuDirection.DOWN:
             self.menu_index = (self.menu_index + 1) % len(MENU_ITEMS)
+            audio.play("menu_move")
         if self._menu_confirm_pressed(raw):
+            audio.play("menu_select")
             self._activate_menu_item()
 
     def _menu_direction_pressed(self, raw: RawInput) -> Optional[input_mod.MenuDirection]:
@@ -247,6 +275,17 @@ class Game:
         ):
             self._reset_positions()
 
+        # Whistle: once at kickoff (the very first one and every restart
+        # after a goal, exactly like a real referee resuming play), and
+        # once at full time. Both are edge-triggered off the phase
+        # captured *before* this tick, so each fires exactly once per
+        # transition rather than every frame the new phase holds.
+        if prev_phase is match_mod.MatchPhase.KICKOFF and self.match.phase is match_mod.MatchPhase.PLAYING:
+            audio.play("whistle")
+        just_ended = prev_phase is not match_mod.MatchPhase.FULL_TIME and match_mod.is_match_over(self.match)
+        if just_ended:
+            audio.play("whistle")
+
         if match_mod.is_match_over(self.match):
             if self.state is GameState.DEMO:
                 self._enter_demo()  # bounds the demo: start a fresh one rather than stopping
@@ -263,6 +302,19 @@ class Game:
         # config.CPU_STALEMATE_SECONDS and CPUController._defensive_target_x().
         self._seconds_since_goal += dt
         force_full_advance = self._seconds_since_goal >= config.CPU_STALEMATE_SECONDS
+
+        # A perfectly symmetric CPU-vs-CPU approach to a resting ball
+        # (e.g. every kickoff) has both sides reaching kick range on the
+        # *exact same tick* -- a genuine tie. Always resolving left's
+        # kick/collision first, every single time, silently handed left
+        # the winning touch on every such tie (confirmed by simulation:
+        # CPU-vs-CPU matches were scoring 100% one-sided before this
+        # fix). Alternating which side is resolved first frame to frame
+        # breaks that determinism without touching either side's actual
+        # skill/positioning logic, so ties split roughly evenly across a
+        # match instead of always going the same way.
+        self._priority_swap = not self._priority_swap
+        swap = self._priority_swap
 
         if self.cpu_left is not None:
             intent = self.cpu_left.update(dt, self.ball, self.player_left, force_full_advance)
@@ -292,26 +344,79 @@ class Game:
         # position.
         players.separate_players(self.player_left, self.player_right)
 
-        # A successful kick and the passive header bounce are mutually
-        # exclusive in the same frame for the same player -- otherwise a
-        # kick could be immediately re-reflected by an overlapping head
-        # hit-box before the ball has even moved.
-        kicked_l = players.try_kick(self.player_left, self.ball, kick_l)
-        kicked_r = players.try_kick(self.player_right, self.ball, kick_r)
-        if not kicked_l:
-            players.apply_head_collision(self.player_left, self.ball)
-        if not kicked_r:
-            players.apply_head_collision(self.player_right, self.ball)
+        # Kicking is charge-and-release (see players.update_kick and
+        # config.POWER_SHOT_*): kick_l/kick_r are simply "is the kick
+        # control held this frame", exactly as before -- update_kick
+        # only actually launches the ball on the frame the control is
+        # released, with strength scaled by how long it was held.
+        if swap:
+            kick_result_r = players.update_kick(self.player_right, self.ball, kick_r, dt)
+            kick_result_l = players.update_kick(self.player_left, self.ball, kick_l, dt)
+        else:
+            kick_result_l = players.update_kick(self.player_left, self.ball, kick_l, dt)
+            kick_result_r = players.update_kick(self.player_right, self.ball, kick_r, dt)
+        if kick_result_l.fired:
+            audio.play("power_shot" if kick_result_l.is_power_shot else "kick")
+        if kick_result_r.fired:
+            audio.play("power_shot" if kick_result_r.is_power_shot else "kick")
 
-        event = physics.step_ball(self.ball, dt)
+        # Substep the ball's movement so a fast ball can never tunnel
+        # through a thin collider (a goalpost, the crossbar, or a
+        # player's body) between two discrete overlap checks -- see
+        # config.BALL_MAX_STEP_PX. Player-vs-ball collisions are checked
+        # at the start of every substep, against the ball's position as
+        # it actually is right then, not just once for the whole frame
+        # (which is what let a fast ball skip clean through a player).
+        #
+        # A successful kick and the passive header/body bounce are
+        # mutually exclusive for the same player this frame -- otherwise
+        # a kick could be immediately re-reflected by an overlapping
+        # hit-box before the ball has even moved.
+        n_substeps = max(1, math.ceil(self.ball.speed() * dt / config.BALL_MAX_STEP_PX))
+        sub_dt = dt / n_substeps
+        event = None
+        for _ in range(n_substeps):
+            if swap:
+                if not kick_result_r.fired:
+                    if players.apply_head_collision(self.player_right, self.ball):
+                        audio.play("header")
+                    players.apply_body_collision(self.player_right, self.ball)
+                if not kick_result_l.fired:
+                    if players.apply_head_collision(self.player_left, self.ball):
+                        audio.play("header")
+                    players.apply_body_collision(self.player_left, self.ball)
+            else:
+                if not kick_result_l.fired:
+                    if players.apply_head_collision(self.player_left, self.ball):
+                        audio.play("header")
+                    players.apply_body_collision(self.player_left, self.ball)
+                if not kick_result_r.fired:
+                    if players.apply_head_collision(self.player_right, self.ball):
+                        audio.play("header")
+                    players.apply_body_collision(self.player_right, self.ball)
+
+            sub_event = physics.step_ball(self.ball, sub_dt, on_bounce=self._on_ball_bounce)
+            if sub_event is not None:
+                event = sub_event
+
         if event == "left_goal":
+            audio.play("goal")
             match_mod.register_goal(self.match, side="right")
             self._seconds_since_goal = 0.0
         elif event == "right_goal":
+            audio.play("goal")
             match_mod.register_goal(self.match, side="left")
             self._seconds_since_goal = 0.0
 
         self.anim_clock += dt
+
+    @staticmethod
+    def _on_ball_bounce(surface: str) -> None:
+        """Notification hook passed to physics.step_ball() -- see its
+        ``on_bounce`` parameter. One shared "bounce" sound for the
+        ground, a wall, or the ceiling; a header has its own distinct
+        sound (see _step_gameplay())."""
+        audio.play("bounce")
 
     # -- result screen --------------------------------------------------------------
     def _enter_result(self) -> None:
@@ -402,6 +507,11 @@ class Game:
     def init_display(self) -> None:
         pygame.init()
         pygame.display.set_caption(config.WINDOW_TITLE)
+        # Sound is entirely optional -- see audio.py's module docstring.
+        # This is the only place audio is ever turned on: headless tests
+        # and the build-time preview/placeholder generator tools never
+        # call init_display(), so audio stays off there automatically.
+        audio.init()
         # SCALED keeps the game rendering at its logical 800x600 while SDL
         # letterboxes that onto whatever panel is fitted, so the cabinet and a
         # laptop of any resolution both get a correct picture. FULLSCREEN is

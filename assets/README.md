@@ -1,4 +1,4 @@
-# HeadScotter art assets
+# HeadScotter art and sound assets
 
 All gameplay art is loaded from the PNG files in `assets/sprites/` through
 the single loader in `headscotter/assets.py`. Nothing else in the codebase
@@ -6,7 +6,8 @@ draws gameplay sprites procedurally (the only exception is HUD/menu text,
 drawn with pygame fonts as ordinary UI chrome, not gameplay art), and
 nothing reads a sprite path directly -- every file below is declared once
 in `headscotter.assets.SPRITE_SPECS` (name -> relative path -> nominal
-pixel size).
+pixel size). All sound effects follow the identical contract through
+`headscotter/audio.py` -- see "Sound" below.
 
 **To replace any piece of art, overwrite the file at the same path with
 the same name, keeping (roughly) the same aspect ratio. No code changes
@@ -147,6 +148,59 @@ opponent's defensive positioning does that job instead.
 |---|---|---|
 | `scoreboard.png` | 260x70 | The compact HUD panel anchored at the top-center of the screen (`config.SCOREBOARD_TOP_Y`). `render.py` draws the score digits, team labels, and the clock/"SUDDEN DEATH" text on top of this panel as ordinary HUD text -- nothing about the score or clock is baked into the image itself. |
 
+## Sound
+
+All sound effects are loaded from the `.wav` files in `assets/sounds/`
+through the single loader in `headscotter/audio.py` -- the audio
+equivalent of `headscotter/assets.py`'s contract for art, and every file
+below is declared once in `headscotter.audio.SOUND_SPECS`. **To replace
+any sound, overwrite the file at the same path with the same name; no
+code changes are required.**
+
+Audio is entirely optional and degrades silently: if no audio device is
+available or `pygame.mixer` fails to initialise for any reason, the game
+prints one warning to stderr and keeps running with no sound at all --
+the cabinet must never fail to boot a game because of audio. Sound is
+only ever turned on by the real game loop (`Game.init_display()`);
+headless tests and the build-time placeholder/preview generator tools
+never call it, so both stay silent and fully deterministic without any
+special-casing.
+
+Everything currently committed in `assets/sounds/` is a **placeholder**,
+generated deterministically (fixed waveform formulas, never Python's
+`random` module) by `tools/generate_sounds.py`:
+
+```
+python tools/generate_sounds.py
+```
+
+| File | Used for |
+|---|---|
+| `kick.wav` | An ordinary kick connecting (`players.update_kick()`, a quick tap-and-release). |
+| `power_shot.wav` | A charged power shot connecting -- see "Power shot" below. Distinct from, and more dramatic than, an ordinary kick. |
+| `bounce.wav` | The ball bouncing off the ground, a wall, or the ceiling (`physics.step_ball()`'s `on_bounce` hook). |
+| `header.wav` | The ball bouncing off a player's head (`players.apply_head_collision()`). |
+| `goal.wav` | A goal is scored. |
+| `whistle.wav` | Kickoff (the opening whistle and every restart after a goal) and full time. |
+| `menu_move.wav` | Moving the menu selection up or down. |
+| `menu_select.wav` | Confirming a menu selection. |
+
+## Power shot
+
+Holding the kick control charges a power shot; releasing it fires, with
+strength interpolated continuously between an ordinary kick (an
+immediate tap-and-release) and a full power shot (held for
+`config.POWER_SHOT_CHARGE_SECONDS`) -- see `players.update_kick()`. A
+small charge meter appears above a charging player's head
+(`render._draw_charge_indicator()`) so the mechanic is discoverable
+without a tutorial; it is drawn procedurally (a simple bar, like the
+HUD's score/clock text), not a sprite, since it is dynamic gameplay
+feedback rather than art. A fully-charged shot costs extra recovery time
+(`config.POWER_SHOT_COOLDOWN_BONUS_SECONDS`) on top of an ordinary
+kick's cooldown, so it cannot simply replace ordinary kicking. The hook
+for later per-character special abilities is deliberately left open;
+none are built yet.
+
 ## Adding a brand-new sprite
 
 1. Add an entry to `SPRITE_SPECS` in `headscotter/assets.py` (name,
@@ -155,3 +209,11 @@ opponent's defensive positioning does that job instead.
    so the placeholder set stays complete, then run the script.
 3. Reference the new sprite by name from `headscotter/render.py` with
    `assets.get("your_new_name")`.
+
+## Adding a brand-new sound
+
+1. Add an entry to `SOUND_SPECS` in `headscotter/audio.py` (name ->
+   relative path).
+2. Add a matching generator function in `tools/generate_sounds.py` so
+   the placeholder set stays complete, then run the script.
+3. Play it from `headscotter/game.py` with `audio.play("your_new_name")`.

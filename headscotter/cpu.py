@@ -48,12 +48,22 @@ class CPUController:
     _known_ball_vy: float = field(default=0.0, repr=False)
     _aim_error: float = field(default=0.0, repr=False)
     _has_perceived: bool = field(default=False, repr=False)
+    #: Whether the ball was in kick range on the *previous* call -- see
+    #: the note at the ``kick`` computation in :meth:`update` on why this
+    #: must be edge-triggered, not a level signal.
+    _kick_was_in_range: bool = field(default=False, repr=False)
+    #: Whether this CPU's kick was on cooldown on the *previous* call --
+    #: see the note at the ``kick`` computation on why a cooldown clearing
+    #: must give a fresh kick opportunity even if the ball never left range.
+    _was_on_cooldown: bool = field(default=False, repr=False)
 
     def reset(self) -> None:
         """Forget everything perceived so far (used at kickoff)."""
         self._perception_timer = 0.0
         self._has_perceived = False
         self._aim_error = 0.0
+        self._kick_was_in_range = False
+        self._was_on_cooldown = False
 
     def update(self, dt: float, ball: Ball, player: Player, force_full_advance: bool = False) -> CPUIntent:
         self._perceive(dt, ball)
@@ -78,7 +88,36 @@ class CPUController:
             abs(self._known_ball_x - kick_box_cx) <= config.CPU_KICK_RANGE_X
             and abs(self._known_ball_y - kick_box_cy) <= config.CPU_KICK_RANGE_Y
         )
-        kick = in_kick_range and player.kick_cooldown <= 0.0
+        # Edge-triggered, not a level signal: players.update_kick() now
+        # charges a power shot for as long as its "kick" input is held,
+        # firing only on release (see config.POWER_SHOT_*). A CPU's
+        # in-range check is a *condition*, true for as many consecutive
+        # frames as the ball happens to sit in its kick box -- treating
+        # that directly as "held" made every CPU kick charge to a near-
+        # full power shot almost every time, which blew scoring far past
+        # any sane band. Firing only on the rising edge (the first frame
+        # the ball enters range) reproduces a human's quick tap-and-kick
+        # instead, so the CPU kicks at ordinary strength like it always
+        # did -- confirmed by re-running the full-match balance
+        # simulation (see tests/test_balance.py) before and after.
+        #
+        # But a *pure* rising edge alone can permanently latch off: a
+        # ball that comes to rest and simply never leaves kick range
+        # would only ever fire once, on the very first frame it arrived
+        # -- confirmed by simulation to genuinely deadlock a match
+        # forever (a resting ball a player could always reach, but never
+        # kicked again). So a cooldown clearing while the ball is still
+        # sitting in range also counts as a fresh opportunity, exactly
+        # like a human tapping the button again once they're able to --
+        # this still fires as a single one-frame pulse each time (a tap,
+        # not a hold), so it never risks charging a power shot either.
+        cooldown_just_cleared = self._was_on_cooldown and player.kick_cooldown <= 0.0
+        self._was_on_cooldown = player.kick_cooldown > 0.0
+        if cooldown_just_cleared:
+            self._kick_was_in_range = False
+
+        kick = in_kick_range and not self._kick_was_in_range and player.kick_cooldown <= 0.0
+        self._kick_was_in_range = in_kick_range
 
         return CPUIntent(move=move, jump=jump, kick=kick)
 

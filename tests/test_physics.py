@@ -80,12 +80,24 @@ class GoalScoringTests(unittest.TestCase):
                 break
         self.assertEqual(event, "right_goal")
 
-    def test_partial_crossing_of_goal_line_is_not_yet_a_goal(self):
-        # Center barely poking past the line, but the ball hasn't fully
-        # crossed it (its far edge is still inside the pitch).
-        ball = Ball(x=config.PITCH_LEFT - 1, y=config.GROUND_Y - 10, vx=-1.0, vy=0.0)
+    def test_ball_center_still_on_the_pitch_side_is_not_yet_a_goal(self):
+        # The leading edge has entered the goal mouth, but the centre
+        # has not yet crossed the line -- not a goal yet.
+        ball = Ball(x=config.PITCH_LEFT + 1, y=config.GROUND_Y - 10, vx=0.0, vy=0.0)
         event = physics.step_ball(ball, dt=1 / 600.0)
         self.assertIsNone(event)
+
+    def test_ball_center_crossing_the_line_scores_even_if_the_far_edge_has_not_cleared(self):
+        # This is the fix for a genuine soft-lock found via simulation: a
+        # ball resting just past the line (centre past it, far/trailing
+        # edge not yet) must still count as a goal -- otherwise it could
+        # end up motionless in a dead zone beyond where any player can
+        # ever reach it (past their own movement clamp), with no way to
+        # ever finish crossing on its own. See the module docstring on
+        # physics.step_ball().
+        ball = Ball(x=config.PITCH_LEFT - 1, y=config.GROUND_Y - 10, vx=0.0, vy=0.0)
+        event = physics.step_ball(ball, dt=1 / 600.0)
+        self.assertEqual(event, "left_goal")
 
 
 class BallContainmentTests(unittest.TestCase):

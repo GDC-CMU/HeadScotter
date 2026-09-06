@@ -17,14 +17,22 @@ scoreboard" territory (in *either* direction: unwatchable blowouts, or
 defense so good nobody can ever score) fails loudly here instead of only
 being noticed by someone watching a preview clip.
 
-An earlier tuning pass kept every match single-digit-per-side *on
-average* but left a long tail of occasional teens-per-match blowouts --
-outside the sourced convention (the report: "typical scorelines are low
-single digits (0-5)" per side, from martinlhw/Head_Soccer's first-to-5
-games). The thresholds below were tightened specifically to catch that
-tail, not just the average, by re-sweeping CPU_MAX_ADVANCE_FRACTION,
-BALL_RESTITUTION_HEAD, and KICK_IMPULSE_SPEED against 50+ simulated
-seeds and tracking the worst-case per-side score, not only the mean.
+Re-tuned once more after making the ball itself bouncier/floatier
+(BALL_GRAVITY/BALL_RESTITUTION_GROUND, both in config.py, raised to make
+the ball feel "light" rather than "heavy" per a direct play-feel
+complaint): a livelier ball needed CPU_MAX_ADVANCE_FRACTION,
+BALL_RESTITUTION_HEAD, and KICK_IMPULSE_SPEED all re-swept together, or
+scoring ran away into the double digits per side. The thresholds below
+reflect that re-sweep (30+ simulated seeds, tracking the worst-case
+per-side score, not only the mean), not the original ball-physics pass.
+
+Confirmed again after adding a real body collider (fixing the ball
+passing straight through a standing player), per-substep ball collision
+checks (fixing tunnelling at high ball speed), and the chargeable power
+shot: a 20-seed sweep over this same seed range gave per-side scores of
+1-7 and match totals of 4-11 (avg ~7.65), comfortably inside the
+thresholds below and with zero non-terminating matches -- none of that
+round's changes needed a further re-tune of the constants above.
 
 Also confirms sudden death itself always terminates: with no keeper and
 a smaller defensive leash than before, a tied match staying tied is a
@@ -42,15 +50,15 @@ from headscotter.game import Game, GameState
 from headscotter.input import RawInput
 
 # Sourced band: "low single digits (0-5)" per side. Set with headroom
-# above the actually-observed simulated range (50+ simulated seeds with
-# the current constants gave per-side scores of 0-9 and match totals of
-# 5-11 -- see the constants' own comments in config.py) so this doesn't
+# above the actually-observed simulated range (30+ simulated seeds with
+# the current constants gave per-side scores of 0-6 and match totals of
+# 5-9 -- see the constants' own comments in config.py) so this doesn't
 # flake on ordinary variance, while still catching a regression back
-# toward the old double-digit-per-side blowout tail by a wide margin.
-MAX_GOALS_PER_SIDE = 10
-MAX_TOTAL_GOALS = 16
+# toward a double-digit-per-side blowout tail by a wide margin.
+MAX_GOALS_PER_SIDE = 8
+MAX_TOTAL_GOALS = 14
 MIN_ACCEPTABLE_AVERAGE_TOTAL = 1.0
-MAX_ACCEPTABLE_AVERAGE_TOTAL = 10.0
+MAX_ACCEPTABLE_AVERAGE_TOTAL = 8.0
 
 # A real 90s match's *live* playing time is bounded, but every goal also
 # spends GOAL_CELEBRATION_SECONDS + KICKOFF_FREEZE_SECONDS frozen, and a

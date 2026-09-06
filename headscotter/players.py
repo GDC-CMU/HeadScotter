@@ -18,9 +18,10 @@ from .physics import Ball
 @dataclass
 class Player:
     """One head-soccer character. ``x``/``y`` track the *feet* position;
-    the collidable "head" circle is derived from it (see
-    :attr:`head_center`). ``sprite_key`` is a pure display label
-    (e.g. "scotty" or "rival") consumed only by render.py."""
+    the collidable "head" circle and "body" rectangle are both derived
+    from it (see :attr:`head_center` and :func:`body_rect`).
+    ``sprite_key`` is a pure display label (e.g. "scotty" or "rival")
+    consumed only by render.py."""
 
     x: float
     y: float = config.GROUND_Y
@@ -29,6 +30,15 @@ class Player:
     on_ground: bool = True
     moving: bool = False
     kick_cooldown: float = 0.0
+    #: Seconds the kick control has been held continuously this charge --
+    #: see :func:`update_kick`. Reset to 0 the instant it is released
+    #: (whether or not that release fired a shot) or while on cooldown.
+    kick_charge: float = 0.0
+    #: Counts down after any kick (normal or power) fires, purely so
+    #: render.py can hold the kick pose for a fixed, predictable window
+    #: (config.KICK_POSE_HOLD_SECONDS) regardless of that kick's own
+    #: (now variable, see config.POWER_SHOT_*) cooldown length.
+    kick_pose_timer: float = 0.0
     sprite_key: str = "scotty"
 
     @property
@@ -37,10 +47,35 @@ class Player:
 
     @property
     def just_kicked(self) -> bool:
-        """True for the short window right after a kick fires (cooldown
-        freshly set to its maximum) -- used only by render.py to pick a
-        kick pose; carries no gameplay meaning of its own."""
-        return self.kick_cooldown > (config.KICK_COOLDOWN_SECONDS * 0.6)
+        """True for the short window right after a kick fires -- used
+        only by render.py to pick a kick pose; carries no gameplay
+        meaning of its own."""
+        return self.kick_pose_timer > 0.0
+
+    @property
+    def charge_fraction(self) -> float:
+        """0.0-1.0 progress toward a full-strength power shot -- used
+        only by render.py to draw the charge indicator."""
+        if config.POWER_SHOT_CHARGE_SECONDS <= 0.0:
+            return 0.0
+        return physics.clamp(self.kick_charge / config.POWER_SHOT_CHARGE_SECONDS, 0.0, 1.0)
+
+
+def body_rect(player: Player) -> Tuple[float, float, float, float]:
+    """The torso+legs collider: an axis-aligned box ``PLAYER_HALF_WIDTH``
+    either side of the player's centreline, spanning from the bottom of
+    the head circle down to the feet. This is what makes the body
+    actually solid against the ball -- previously the head circle was
+    the *only* collider, leaving a real gap (the torso/legs) the ball
+    could pass straight through. See :func:`apply_body_collision`.
+    """
+    top = player.y - (config.HEAD_OFFSET_Y - config.HEAD_RADIUS)
+    return (
+        player.x - config.PLAYER_HALF_WIDTH,
+        top,
+        player.x + config.PLAYER_HALF_WIDTH,
+        player.y,
+    )
 
 
 def new_player(x: float, facing: int, sprite_key: str = "scotty") -> Player:
@@ -75,11 +110,13 @@ def step_player_physics(player: Player, dt: float) -> None:
         player.on_ground = True
     if player.kick_cooldown > 0.0:
         player.kick_cooldown = max(0.0, player.kick_cooldown - dt)
+    if player.kick_pose_timer > 0.0:
+        player.kick_pose_timer = max(0.0, player.kick_pose_timer - dt)
 
 
 def update_player(player: Player, dt: float, move: int, jump_pressed: bool) -> None:
     """The full per-frame update for one player's own body, excluding the
-    ball interactions (see :func:`try_kick` / :func:`apply_head_collision`,
+    ball interactions (see :func:`update_kick` / :func:`apply_head_collision`,
     called separately once both players have moved)."""
     apply_move(player, move, dt)
     if jump_pressed:
@@ -156,26 +193,64 @@ def separate_players(a: Player, b: Player) -> bool:
     return True
 
 
-def try_kick(player: Player, ball: Ball, kick_pressed: bool) -> bool:
-    """If ``kick_pressed`` and the ball is within this player's kick
-    hit-box (in front of them, at foot height) and their cooldown has
-    elapsed, launch the ball and return True. A kick is a deliberate,
-    fairly strong strike -- distinct from the passive header bounce in
-    :func:`apply_head_collision`, which happens regardless of any button.
+class KickResult:
+    """Result of a single call to :func:`update_kick`. Deliberately a
+    small explicit object rather than a bare bool -- ``bool(result)`` is
+    NOT meaningful; check ``.fired`` -- so a caller can't accidentally
+    treat "a kick object exists" as "a kick fired"."""
+
+    __slots__ = ("fired", "is_power_shot")
+
+    def __init__(self, fired: bool, is_power_shot: bool = False):
+        self.fired = fired
+        self.is_power_shot = is_power_shot
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return f"KickResult(fired={self.fired}, is_power_shot={self.is_power_shot})"
+
+
+def update_kick(player: Player, ball: Ball, kick_held: bool, dt: float) -> KickResult:
+    """Charge-and-release kicking: holding the kick control charges a
+    power shot (see config.POWER_SHOT_*); releasing it fires, with the
+    strength interpolated continuously from an ordinary kick (an
+    immediate tap-and-release, near-zero charge) up to a full power shot
+    (held for config.POWER_SHOT_CHARGE_SECONDS). The ball must be within
+    this player's kick hit-box (in front of them, at foot height) *at
+    the moment of release* for anything to fire; charging with no ball
+    nearby is harmless and simply resets on release.
+
+    A kick (of either strength) is a deliberate strike -- distinct from
+    the passive header/body bounce in :func:`apply_head_collision` /
+    :func:`apply_body_collision`, which happen regardless of any button.
     """
-    if not kick_pressed or player.kick_cooldown > 0.0:
-        return False
+    if kick_held:
+        if player.kick_cooldown <= 0.0:
+            player.kick_charge = min(config.POWER_SHOT_CHARGE_SECONDS, player.kick_charge + dt)
+        return KickResult(fired=False)
+
+    charge = player.kick_charge
+    player.kick_charge = 0.0
+    if charge <= 0.0 or player.kick_cooldown > 0.0:
+        return KickResult(fired=False)
 
     box_cx = player.x + player.facing * (config.KICK_RANGE_X * 0.5)
     box_cy = player.y - (config.KICK_RANGE_Y * 0.5)
     if abs(ball.x - box_cx) > config.KICK_RANGE_X or abs(ball.y - box_cy) > config.KICK_RANGE_Y:
-        return False
+        return KickResult(fired=False)
 
-    angle = math.radians(config.KICK_LAUNCH_ANGLE_DEG)
-    ball.vx = player.facing * config.KICK_IMPULSE_SPEED * math.cos(angle)
-    ball.vy = -config.KICK_IMPULSE_SPEED * math.sin(angle)
-    player.kick_cooldown = config.KICK_COOLDOWN_SECONDS
-    return True
+    fraction = physics.clamp(charge / config.POWER_SHOT_CHARGE_SECONDS, 0.0, 1.0)
+    speed = config.KICK_IMPULSE_SPEED + (config.POWER_SHOT_IMPULSE_SPEED - config.KICK_IMPULSE_SPEED) * fraction
+    angle_deg = (
+        config.KICK_LAUNCH_ANGLE_DEG
+        + (config.POWER_SHOT_LAUNCH_ANGLE_DEG - config.KICK_LAUNCH_ANGLE_DEG) * fraction
+    )
+    angle = math.radians(angle_deg)
+    ball.vx = player.facing * speed * math.cos(angle)
+    ball.vy = -speed * math.sin(angle)
+
+    player.kick_cooldown = config.KICK_COOLDOWN_SECONDS + config.POWER_SHOT_COOLDOWN_BONUS_SECONDS * fraction
+    player.kick_pose_timer = config.KICK_POSE_HOLD_SECONDS
+    return KickResult(fired=True, is_power_shot=fraction >= 0.5)
 
 
 def apply_head_collision(player: Player, ball: Ball) -> bool:
@@ -190,3 +265,17 @@ def apply_head_collision(player: Player, ball: Ball) -> bool:
         config.BALL_RESTITUTION_HEAD,
         extra_lift=config.HEADER_LIFT,
     )
+
+
+def apply_body_collision(player: Player, ball: Ball) -> bool:
+    """The passive body block: the ball is blocked (not bounced) by the
+    player's torso+legs AABB (see :func:`body_rect`) whenever they
+    overlap. Deliberately low restitution (config.BALL_RESTITUTION_BODY)
+    so a body hit reads as being blocked, not headed -- heading (see
+    :func:`apply_head_collision`) is the genre's actual scoring
+    mechanic, and the body must never out-bounce the head. This is the
+    fix for the ball passing straight through a player's torso/legs: the
+    head circle used to be the *only* collider on the whole body.
+    """
+    left, top, right, bottom = body_rect(player)
+    return physics.resolve_circle_aabb_collision(ball, left, top, right, bottom, config.BALL_RESTITUTION_BODY)

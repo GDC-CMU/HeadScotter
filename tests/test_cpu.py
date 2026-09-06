@@ -70,12 +70,34 @@ class CPUJumpTests(unittest.TestCase):
 
 class CPUKickTests(unittest.TestCase):
     def test_cpu_kicks_when_ball_is_in_range(self):
+        """Edge-triggered: kick fires the frame the ball *newly* enters
+        range, mimicking a human's quick tap-and-kick -- see cpu.py's
+        note on why this must not be a level signal (players.update_kick()
+        now charges a power shot for as long as its input is held)."""
+        cpu_ctrl = CPUController(rng=random.Random(7))
+        player = new_player(config.PITCH_CENTER_X, facing=1)
+        far_ball = Ball(x=player.x + 500, y=player.y)
+        cpu_ctrl.update(0.0, far_ball, player)  # perceives the ball out of range first
+        ball = Ball(x=player.x + 20, y=player.y - 40)
+        intent = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
+        self.assertTrue(intent.kick)
+
+    def test_cpu_does_not_keep_kicking_while_ball_stays_in_range(self):
+        """The whole point of the edge trigger: once the ball has been
+        in range for one frame, subsequent frames must not also report
+        kick=True just because it is still there -- otherwise a CPU
+        "holds" the kick control for as long as the ball lingers, which
+        is exactly the bug that made every CPU kick charge into an
+        unintended power shot."""
         cpu_ctrl = CPUController(rng=random.Random(7))
         player = new_player(config.PITCH_CENTER_X, facing=1)
         ball = Ball(x=player.x + 20, y=player.y - 40)
-        cpu_ctrl.update(0.0, ball, player)
-        intent = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
-        self.assertTrue(intent.kick)
+        first = cpu_ctrl.update(0.0, ball, player)
+        second = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
+        third = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
+        self.assertTrue(first.kick)
+        self.assertFalse(second.kick)
+        self.assertFalse(third.kick)
 
     def test_cpu_does_not_kick_when_ball_is_far_away(self):
         cpu_ctrl = CPUController(rng=random.Random(8))
@@ -89,8 +111,9 @@ class CPUKickTests(unittest.TestCase):
         cpu_ctrl = CPUController(rng=random.Random(9))
         player = new_player(config.PITCH_CENTER_X, facing=1)
         player.kick_cooldown = config.KICK_COOLDOWN_SECONDS
+        far_ball = Ball(x=player.x + 500, y=player.y)
+        cpu_ctrl.update(0.0, far_ball, player)
         ball = Ball(x=player.x + 20, y=player.y - 40)
-        cpu_ctrl.update(0.0, ball, player)
         intent = cpu_ctrl.update(config.CPU_REACTION_DELAY_SECONDS, ball, player)
         self.assertFalse(intent.kick)
 

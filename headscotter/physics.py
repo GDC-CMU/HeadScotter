@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 from . import config
 
@@ -52,20 +52,38 @@ def _cap_speed(ball: Ball) -> None:
         ball.vy *= scale
 
 
-def step_ball(ball: Ball, dt: float) -> Optional[str]:
-    """Advance the ball one frame: gravity, drag, integration, and
+def step_ball(ball: Ball, dt: float, on_bounce: Optional[Callable[[str], None]] = None) -> Optional[str]:
+    """Advance the ball one frame (or one substep -- see game.py, which
+    calls this several times per real frame at high ball speed to avoid
+    tunnelling through thin colliders): gravity, drag, integration, and
     collisions with the ground, side walls/crossbars, and the ceiling.
 
-    Returns ``"left_goal"`` the frame the ball fully crosses the left goal
-    line inside the goal mouth (the left goal was breached -- the right
-    player scores), ``"right_goal"`` for the mirror case, or ``None``.
+    Returns ``"left_goal"`` the frame the ball's *centre* crosses the left
+    goal line inside the goal mouth (the left goal was breached -- the
+    right player scores), ``"right_goal"`` for the mirror case, or
+    ``None``. Deliberately centre-crossing, not "the entire circle has
+    fully cleared the line": requiring the far edge to clear too left a
+    narrow dead zone, beyond where any player can ever stand (past their
+    own movement clamp) but before the far-edge threshold, where a slow
+    trickle could come to rest forever with no player able to reach it
+    and no way to ever finish crossing -- a genuine, confirmed soft-lock
+    (see tests/test_arcade_contract.py's full-match simulation, and
+    tests/test_balance.py's sudden-death termination guard). Once the
+    centre is over the line the ball reads as "in the net" regardless of
+    the trailing edge, which also matches how forgiving most reference
+    implementations' goal detection is.
+
+    ``on_bounce``, if given, is called with ``"ceiling"``, ``"ground"``,
+    or ``"wall"`` exactly when that surface is actually hit this call --
+    purely a notification hook (e.g. for a sound effect); it never
+    affects the physics and defaults to doing nothing.
 
     The ball is always kept within [PITCH_LEFT, PITCH_RIGHT] x
     [PITCH_TOP, GROUND_Y] except while it is mid-crossing of a goal line,
     so it can never wedge into a wall or permanently leave the pitch --
     any kick or header can always move it again from wherever it lands.
     """
-    ball.vy = apply_gravity(ball.vy, dt)
+    ball.vy = apply_gravity(ball.vy, dt, config.BALL_GRAVITY)
     # Gentle air resistance: only horizontal speed decays in flight, so a
     # kicked ball's arc still looks governed by gravity, not a wind machine.
     ball.vx *= max(0.0, 1.0 - config.BALL_AIR_DRAG_PER_SEC * dt)
@@ -78,6 +96,8 @@ def step_ball(ball: Ball, dt: float) -> Optional[str]:
     if ball.y - ball.radius < config.PITCH_TOP:
         ball.y = config.PITCH_TOP + ball.radius
         ball.vy = abs(ball.vy) * config.BALL_RESTITUTION_WALL
+        if on_bounce is not None:
+            on_bounce("ceiling")
 
     # Ground: bounce, then bleed off horizontal speed via rolling friction.
     if ball.y + ball.radius > config.GROUND_Y:
@@ -89,13 +109,17 @@ def step_ball(ball: Ball, dt: float) -> Optional[str]:
             ball.vx = 0.0
         else:
             ball.vx -= friction * (1.0 if ball.vx > 0 else -1.0)
+        if on_bounce is not None:
+            on_bounce("ground")
 
     # Left side: solid post above the crossbar, open goal mouth below it.
     if ball.x - ball.radius < config.PITCH_LEFT:
         if ball.y + ball.radius <= config.CROSSBAR_Y:
             ball.x = config.PITCH_LEFT + ball.radius
             ball.vx = abs(ball.vx) * config.BALL_RESTITUTION_WALL
-        elif ball.x + ball.radius < config.PITCH_LEFT:
+            if on_bounce is not None:
+                on_bounce("wall")
+        elif ball.x <= config.PITCH_LEFT:
             event = "left_goal"
 
     # Right side, mirrored.
@@ -103,7 +127,9 @@ def step_ball(ball: Ball, dt: float) -> Optional[str]:
         if ball.y + ball.radius <= config.CROSSBAR_Y:
             ball.x = config.PITCH_RIGHT - ball.radius
             ball.vx = -abs(ball.vx) * config.BALL_RESTITUTION_WALL
-        elif ball.x - ball.radius > config.PITCH_RIGHT:
+            if on_bounce is not None:
+                on_bounce("wall")
+        elif ball.x >= config.PITCH_RIGHT:
             event = "right_goal"
 
     _cap_speed(ball)
@@ -152,5 +178,69 @@ def resolve_circle_collision(
         # lift -- otherwise a ball merely resting against a head would be
         # nudged upward every single frame with nothing to explain it.
         ball.vy -= extra_lift
+    _cap_speed(ball)
+    return True
+
+
+def resolve_circle_aabb_collision(
+    ball: Ball,
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    restitution: float,
+) -> bool:
+    """Push the ball out of, and bounce it off (with ``restitution``), a
+    static axis-aligned rectangle -- e.g. a player's body/torso (see
+    players.apply_body_collision()). Returns True if a collision was
+    present and resolved.
+
+    Uses the standard closest-point-on-rect construction: find the point
+    on the rectangle nearest the ball's centre, treat the vector from
+    that point to the centre as the collision normal, and resolve exactly
+    like :func:`resolve_circle_collision` against a circle at that point.
+    If the ball's centre is already inside the rectangle (fully
+    embedded -- possible for a very fast ball on a coarse frame), that
+    vector is zero-length, so it falls back to pushing out along
+    whichever side has the least penetration instead.
+    """
+    closest_x = clamp(ball.x, left, right)
+    closest_y = clamp(ball.y, top, bottom)
+    dx = ball.x - closest_x
+    dy = ball.y - closest_y
+    dist_sq = dx * dx + dy * dy
+
+    if dist_sq >= ball.radius * ball.radius:
+        return False
+
+    if dist_sq < 1e-9:
+        # Ball centre is inside the rect: push out through whichever side
+        # is closest, rather than through an undefined (zero-length) normal.
+        pen_left = ball.x - left
+        pen_right = right - ball.x
+        pen_top = ball.y - top
+        pen_bottom = bottom - ball.y
+        smallest = min(pen_left, pen_right, pen_top, pen_bottom)
+        if smallest == pen_left:
+            nx, ny = -1.0, 0.0
+        elif smallest == pen_right:
+            nx, ny = 1.0, 0.0
+        elif smallest == pen_top:
+            nx, ny = 0.0, -1.0
+        else:
+            nx, ny = 0.0, 1.0
+        overlap = smallest + ball.radius
+    else:
+        dist = math.sqrt(dist_sq)
+        nx, ny = dx / dist, dy / dist
+        overlap = ball.radius - dist
+
+    ball.x += nx * overlap
+    ball.y += ny * overlap
+
+    speed_into_surface = ball.vx * nx + ball.vy * ny
+    if speed_into_surface < 0:
+        ball.vx -= (1.0 + restitution) * speed_into_surface * nx
+        ball.vy -= (1.0 + restitution) * speed_into_surface * ny
     _cap_speed(ball)
     return True

@@ -1,6 +1,7 @@
 """Tests for player movement, jumping, and kicking."""
 from __future__ import annotations
 
+import math
 import unittest
 
 from headscotter import config, players
@@ -71,40 +72,86 @@ class JumpAndGravityTests(unittest.TestCase):
 
 
 class KickTests(unittest.TestCase):
+    """Kicking is charge-and-release (players.update_kick): a `tap`
+    (held for one frame then released) fires an ordinary kick almost
+    immediately, exactly like the old instant-press try_kick did."""
+
+    DT = 1 / 60.0
+
+    def _tap_kick(self, player, ball):
+        players.update_kick(player, ball, kick_held=True, dt=self.DT)
+        return players.update_kick(player, ball, kick_held=False, dt=self.DT)
+
     def test_kick_launches_the_ball_in_the_facing_direction(self):
         player = players.new_player(config.PITCH_CENTER_X, facing=1)
         ball = Ball(x=player.x + 10, y=player.y - 40, vx=0.0, vy=0.0)
-        kicked = players.try_kick(player, ball, kick_pressed=True)
-        self.assertTrue(kicked)
+        result = self._tap_kick(player, ball)
+        self.assertTrue(result.fired)
+        self.assertFalse(result.is_power_shot)
         self.assertGreater(ball.vx, 0.0)  # launched toward facing direction (right)
         self.assertLess(ball.vy, 0.0)     # launched upward
 
     def test_kick_facing_left_launches_left(self):
         player = players.new_player(config.PITCH_CENTER_X, facing=-1)
         ball = Ball(x=player.x - 10, y=player.y - 40, vx=0.0, vy=0.0)
-        players.try_kick(player, ball, kick_pressed=True)
+        self._tap_kick(player, ball)
         self.assertLess(ball.vx, 0.0)
 
     def test_kick_out_of_range_does_nothing(self):
         player = players.new_player(config.PITCH_CENTER_X, facing=1)
         ball = Ball(x=player.x + 500, y=player.y, vx=0.0, vy=0.0)
-        kicked = players.try_kick(player, ball, kick_pressed=True)
-        self.assertFalse(kicked)
+        result = self._tap_kick(player, ball)
+        self.assertFalse(result.fired)
         self.assertEqual((ball.vx, ball.vy), (0.0, 0.0))
 
     def test_kick_respects_cooldown(self):
         player = players.new_player(config.PITCH_CENTER_X, facing=1)
         ball = Ball(x=player.x + 10, y=player.y - 40, vx=0.0, vy=0.0)
-        players.try_kick(player, ball, kick_pressed=True)
+        self._tap_kick(player, ball)
         ball2 = Ball(x=player.x + 10, y=player.y - 40, vx=0.0, vy=0.0)
-        kicked_again = players.try_kick(player, ball2, kick_pressed=True)
-        self.assertFalse(kicked_again)
+        result_again = self._tap_kick(player, ball2)
+        self.assertFalse(result_again.fired)
 
     def test_no_kick_without_the_button(self):
         player = players.new_player(config.PITCH_CENTER_X, facing=1)
         ball = Ball(x=player.x + 10, y=player.y - 40, vx=0.0, vy=0.0)
-        kicked = players.try_kick(player, ball, kick_pressed=False)
-        self.assertFalse(kicked)
+        result = players.update_kick(player, ball, kick_held=False, dt=self.DT)
+        self.assertFalse(result.fired)
+
+    def test_holding_the_button_charges_but_does_not_fire(self):
+        player = players.new_player(config.PITCH_CENTER_X, facing=1)
+        ball = Ball(x=player.x + 10, y=player.y - 40, vx=0.0, vy=0.0)
+        for _ in range(10):
+            result = players.update_kick(player, ball, kick_held=True, dt=self.DT)
+            self.assertFalse(result.fired)
+        self.assertGreater(player.kick_charge, 0.0)
+        self.assertEqual((ball.vx, ball.vy), (0.0, 0.0))  # untouched while still held
+
+    def test_a_full_charge_fires_a_meaningfully_stronger_power_shot(self):
+        player = players.new_player(config.PITCH_CENTER_X, facing=1)
+        ball = Ball(x=player.x + 10, y=player.y - 40, vx=0.0, vy=0.0)
+        steps = int(config.POWER_SHOT_CHARGE_SECONDS / self.DT) + 2
+        for _ in range(steps):
+            players.update_kick(player, ball, kick_held=True, dt=self.DT)
+        result = players.update_kick(player, ball, kick_held=False, dt=self.DT)
+        self.assertTrue(result.fired)
+        self.assertTrue(result.is_power_shot)
+        speed = math.hypot(ball.vx, ball.vy)
+        self.assertGreater(speed, config.KICK_IMPULSE_SPEED)
+        self.assertAlmostEqual(speed, config.POWER_SHOT_IMPULSE_SPEED, delta=1.0)
+        # A power shot costs more cooldown than an ordinary kick.
+        self.assertGreater(player.kick_cooldown, config.KICK_COOLDOWN_SECONDS)
+
+    def test_charge_resets_on_release_even_if_nothing_fires(self):
+        """Charging with no ball in range is harmless -- releasing just
+        resets the charge instead of firing anything."""
+        player = players.new_player(config.PITCH_CENTER_X, facing=1)
+        ball = Ball(x=player.x + 500, y=player.y, vx=0.0, vy=0.0)
+        for _ in range(10):
+            players.update_kick(player, ball, kick_held=True, dt=self.DT)
+        result = players.update_kick(player, ball, kick_held=False, dt=self.DT)
+        self.assertFalse(result.fired)
+        self.assertEqual(player.kick_charge, 0.0)
 
 
 class HeadCollisionTests(unittest.TestCase):
@@ -123,6 +170,54 @@ class HeadCollisionTests(unittest.TestCase):
         self.assertFalse(collided)
 
 
+class BodyCollisionTests(unittest.TestCase):
+    """players.apply_body_collision() -- the fix for the ball passing
+    straight through a standing player's torso/legs, which previously
+    had no collider at all (only the head circle did)."""
+
+    def test_body_rect_spans_from_head_bottom_to_the_feet(self):
+        player = players.new_player(config.PITCH_CENTER_X, facing=1)
+        left, top, right, bottom = players.body_rect(player)
+        self.assertAlmostEqual(left, player.x - config.PLAYER_HALF_WIDTH)
+        self.assertAlmostEqual(right, player.x + config.PLAYER_HALF_WIDTH)
+        self.assertAlmostEqual(bottom, player.y)
+        expected_top = player.y - (config.HEAD_OFFSET_Y - config.HEAD_RADIUS)
+        self.assertAlmostEqual(top, expected_top)
+
+    def test_a_ball_rolling_along_the_ground_into_a_player_is_blocked(self):
+        """This is the exact previously-broken scenario: a ball at
+        ground height (well below the head circle) rolling horizontally
+        into a standing player must not pass through them."""
+        player = players.new_player(config.PITCH_CENTER_X, facing=1)
+        ball = Ball(x=player.x - 200, y=config.GROUND_Y - config.BALL_RADIUS, vx=400.0, vy=0.0)
+        for _ in range(180):  # 3 seconds at 60fps -- plenty to reach and pass the player if unblocked
+            collided = players.apply_body_collision(player, ball)
+            if collided:
+                break
+            ball.x += ball.vx * (1 / 60.0)
+        self.assertLessEqual(ball.x, player.x)  # never made it to/past the player's centre
+        self.assertLessEqual(ball.vx, 0.0)  # horizontal momentum was killed, not preserved
+
+    def test_no_collision_when_ball_is_far_from_the_body(self):
+        player = players.new_player(config.PITCH_CENTER_X, facing=1)
+        ball = Ball(x=player.x + 400, y=config.GROUND_Y - config.BALL_RADIUS, vx=0.0, vy=0.0)
+        collided = players.apply_body_collision(player, ball)
+        self.assertFalse(collided)
+
+    def test_a_ball_dropped_on_the_head_still_bounces_not_blocked(self):
+        """Heading, not blocking, is the genre's actual scoring
+        mechanic -- a ball landing on the head must still be resolved
+        by the bouncier head collision, not swallowed by the body block."""
+        player = players.new_player(config.PITCH_CENTER_X, facing=1)
+        hx, hy = player.head_center
+        ball = Ball(x=hx, y=hy - config.HEAD_RADIUS - 5, vx=0.0, vy=200.0)
+        head_hit = players.apply_head_collision(player, ball)
+        body_hit = players.apply_body_collision(player, ball)
+        self.assertTrue(head_hit)
+        self.assertFalse(body_hit)  # the same ball must not also be caught by the body
+        self.assertLess(ball.vy, 0.0)  # bounced, not just stopped
+
+
 class NeverPermanentlyStuckTests(unittest.TestCase):
     def test_a_resting_ball_can_always_be_kicked_free(self):
         """A ball resting at (vx=0, vy=0) on the ground is never stuck:
@@ -135,8 +230,9 @@ class NeverPermanentlyStuckTests(unittest.TestCase):
         self.assertEqual((ball.vx, ball.vy), (0.0, 0.0))
 
         player = players.new_player(ball.x - 20, facing=1)
-        kicked = players.try_kick(player, ball, kick_pressed=True)
-        self.assertTrue(kicked)
+        players.update_kick(player, ball, kick_held=True, dt=1 / 60.0)
+        result = players.update_kick(player, ball, kick_held=False, dt=1 / 60.0)
+        self.assertTrue(result.fired)
         self.assertNotEqual((ball.vx, ball.vy), (0.0, 0.0))
 
 

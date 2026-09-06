@@ -181,16 +181,36 @@ JUMP_VELOCITY = -780.0           # px/sec, initial upward velocity on jump (nega
 
 # --- Gravity & drag --------------------------------------------------------------
 # Sourced: gravity ~0.6 px/frame^2 at 60fps -> 2160 px/sec^2 -- "snappy, not
-# floaty", per the report's own characterization of the genre.
-GRAVITY = 2160.0                 # px/sec^2, shared by the ball and both players
+# floaty", per the report's own characterization of the genre. This is the
+# *player's* gravity only -- the jump-to-header geometry depends on this
+# exact value (see tests/test_geometry_invariants.py) and must not change:
+#   apex = JUMP_VELOCITY^2 / (2*GRAVITY) = 141px
+#   head-top (415) -> crossbar (300) gap = 115px
+GRAVITY = 2160.0                 # px/sec^2, the player's own gravity only
+# The ball's own gravity, deliberately lower than the player's: a ball that
+# falls exactly as fast as a person feels like a dropped stone, not
+# something you can loft, hang in the air, and chase. Lower gravity (a
+# floatier arc) plus a bouncier ground restitution below is what gives the
+# ball the "light" feel the genre needs while the player's own jump physics
+# above stay completely untouched. NOT independently sourced -- the report
+# measures a single shared gravity per implementation, not a ball/player
+# split -- chosen at ~60% of the player's value as a starting point for a
+# noticeably floatier arc, then kept at this value after re-verifying the
+# full-match balance simulation still holds (see tests/test_balance.py).
+BALL_GRAVITY = 1300.0             # px/sec^2, the ball's own gravity only
 BALL_AIR_DRAG_PER_SEC = 0.35     # fraction of horizontal speed shed per second while airborne
 BALL_GROUND_FRICTION_PER_SEC = 620.0  # px/sec^2 horizontal deceleration while rolling on the ground
 
 # --- Bounce restitution (0 = dead stop, 1 = perfectly elastic) -------------------
-# Sourced: 0.70 is the median and mode of seven independent measurements
-# (range 0.6-0.8) for the ground bounce; GeriiGarcia (this project's exact
-# resolution) also uses 0.7 for its side walls.
-BALL_RESTITUTION_GROUND = 0.70
+# Sourced band: 0.6-0.8 across seven independent measurements, median 0.70.
+# Raised toward the bouncy end of that same sourced band (not beyond it) so
+# the ball has real hang time and rebound instead of feeling dead --
+# together with the lower BALL_GRAVITY above, this is what makes the ball
+# feel "light" rather than "heavy", which is the specific play-feel
+# complaint this was tuned to fix. Re-verified against the full-match
+# balance simulation afterward (see tests/test_balance.py) rather than
+# assumed safe.
+BALL_RESTITUTION_GROUND = 0.78
 BALL_RESTITUTION_WALL = 0.70
 # NOT sourced as a distinct value -- no implementation in the report
 # separates a header bounce from the ordinary ground/wall restitution above.
@@ -202,12 +222,15 @@ BALL_RESTITUTION_WALL = 0.70
 # (a lower value) doesn't clear the ball away from danger, so it lingers
 # in the danger zone and gets poked back in -- confirmed by sweeping
 # candidates against full-match simulation (see tests/test_balance.py),
-# not assumed. 0.76 was the value found, alongside CPU_MAX_ADVANCE_FRACTION
-# and KICK_IMPULSE_SPEED below, that reliably keeps per-side scorelines in
-# the sourced "low single digits" band (the report: "typical scorelines are
-# low single digits (0-5)" per side) without the double-digit-per-side tail
-# an earlier pass had.
-BALL_RESTITUTION_HEAD = 0.76
+# not assumed. Re-tuned to 0.90 (from an initial 0.76) alongside
+# CPU_MAX_ADVANCE_FRACTION and KICK_IMPULSE_SPEED below after making the
+# ball itself bouncier/floatier (BALL_GRAVITY/BALL_RESTITUTION_GROUND
+# above): a much livelier ball needs a correspondingly firmer defensive
+# header to clear it, or scoring runs away into the double digits per
+# side. This is the value that reliably keeps per-side scorelines in the
+# sourced "low single digits" band (the report: "typical scorelines are
+# low single digits (0-5)" per side).
+BALL_RESTITUTION_HEAD = 0.90
 # Below this bounce speed the ball is considered at rest rather than left to
 # jitter in an ever-smaller "Zeno" bounce loop against the ground.
 BALL_MIN_BOUNCE_SPEED = 40.0
@@ -218,6 +241,24 @@ BALL_MAX_SPEED = 900.0
 # head, on top of the elastic reflection -- makes headers arc believably
 # instead of dribbling flatly off the skull.
 HEADER_LIFT = 60.0
+# Restitution for the *body* collider (see PLAYER geometry below and
+# players.apply_body_collision()) -- deliberately low/"dead", not sourced
+# as a distinct value (no implementation in the report models a torso
+# collider at all): a body hit is meant to read as being blocked, not
+# bounced -- the ball loses most of its momentum into the block rather
+# than rebounding like a header. Heading, not blocking, is the genre's
+# actual scoring mechanic, so the body must never out-bounce the head.
+BALL_RESTITUTION_BODY = 0.20
+# Tunnelling guard: physics.step_ball()'s ground/wall/goal checks and the
+# ball-vs-player collision checks in game.py are both discrete overlap
+# tests, so a fast-moving ball can in principle skip clean over a thin
+# collider between two samples (at BALL_MAX_SPEED, one full 60fps frame
+# is a 15px hop -- wider than the goalposts). game.py substeps the ball's
+# per-frame movement so no single substep advances it more than this many
+# pixels, which guarantees every collider at least this thick (every one
+# in this game is: POST_THICKNESS=8, CROSSBAR_THICKNESS=10, and a body's
+# PLAYER_HALF_WIDTH*2=40) gets an overlap check somewhere along the way.
+BALL_MAX_STEP_PX = 6.0
 
 # --- Kicking -----------------------------------------------------------------------
 # The kick's hit-box is a rectangle in front of the player, at foot height,
@@ -230,14 +271,49 @@ HEADER_LIFT = 60.0
 KICK_RANGE_X = 44.0
 KICK_RANGE_Y = 70.0
 # NOT sourced as an exact figure -- re-tuned alongside BALL_RESTITUTION_HEAD
-# and CPU_MAX_ADVANCE_FRACTION during the scoring-tail tightening pass (see
-# tests/test_balance.py): 530 was the value found, by the same
-# sweep-and-simulate method, that keeps a deliberate kick feeling like a
-# real strike without letting a chain of kicks alone blow the scoreline
-# past the sourced "low single digits per side" band.
-KICK_IMPULSE_SPEED = 530.0       # px/sec, magnitude of the velocity a kick imparts
+# and CPU_MAX_ADVANCE_FRACTION during the ball-physics rebalancing pass
+# (see tests/test_balance.py): with the ball itself now bouncier/floatier
+# (BALL_GRAVITY/BALL_RESTITUTION_GROUND above), an ordinary kick needed
+# far less added impulse than before to still feel like a real strike --
+# a kick and a lively ball otherwise stack additively into blowout-speed
+# shots. 300 was the value found, by the same sweep-and-simulate method,
+# that keeps a deliberate kick feeling like a real strike without letting
+# a chain of kicks alone blow the scoreline past the sourced "low single
+# digits per side" band. This is a normal kick's strength specifically --
+# a fully-charged power shot (see POWER_SHOT_IMPULSE_SPEED below) is
+# still meaningfully stronger on top of this.
+KICK_IMPULSE_SPEED = 300.0       # px/sec, magnitude of the velocity a kick imparts
 KICK_LAUNCH_ANGLE_DEG = 38.0     # above horizontal, in the kicker's facing direction
 KICK_COOLDOWN_SECONDS = 0.35     # minimum time between two kicks by the same player
+# How long the "just kicked" pose (render.py's kick sprite) is held after
+# any kick fires, normal or power -- independent of the (now variable,
+# see POWER_SHOT_* below) actual cooldown, so the pose always reads the
+# same regardless of which kind of kick just happened.
+KICK_POSE_HOLD_SECONDS = 0.15
+
+# --- Power shot ----------------------------------------------------------------
+# Holding the kick control charges a power shot; releasing it fires --
+# with the strength interpolated continuously between an ordinary kick
+# (an immediate tap-and-release) and a full power shot (held for the full
+# charge time). NOT sourced -- the research report's corpus predates this
+# feature (a club-approved addition, not a genre convention), so every
+# value below is an original tuning choice, kept in config.py so it can
+# be retuned freely. render.py shows a charge meter above a charging
+# player's head (see _draw_charge_indicator()) so the mechanic is
+# discoverable without a tutorial.
+POWER_SHOT_CHARGE_SECONDS = 0.6     # seconds held to reach a full-strength power shot
+# Meaningfully stronger than an ordinary kick (KICK_IMPULSE_SPEED above)
+# but still under BALL_MAX_SPEED, so a full power shot doesn't just get
+# silently clamped back down to an ordinary-looking shot.
+POWER_SHOT_IMPULSE_SPEED = 850.0   # px/sec, magnitude at full charge
+# A fully-charged shot is also flatter/more driven than a normal kick's
+# lofted arc (KICK_LAUNCH_ANGLE_DEG) -- interpolated the same way as speed.
+POWER_SHOT_LAUNCH_ANGLE_DEG = 20.0
+# Extra cooldown added on top of KICK_COOLDOWN_SECONDS, scaled by charge
+# fraction -- the gate that keeps a power shot from simply replacing
+# ordinary kicking: the harder you hit it, the longer you're open before
+# you can do it again.
+POWER_SHOT_COOLDOWN_BONUS_SECONDS = 0.55
 
 # --- CPU opponent (1P mode) -------------------------------------------------------
 # The CPU only "perceives" the ball on a fixed tick instead of every frame,
@@ -281,12 +357,17 @@ CPU_KICK_RANGE_Y = KICK_RANGE_Y
 # occasional teens-per-match blowouts on the high end -- outside the
 # sourced convention (the report: "typical scorelines are low single
 # digits (0-5)" per side, from martinlhw/Head_Soccer's first-to-5 games).
-# 0.19 was the value found, together with the retuned
-# BALL_RESTITUTION_HEAD and KICK_IMPULSE_SPEED below, by re-sweeping
+# 0.19 tightened that tail considerably. Re-tuned again, down to 0.10,
+# after making the ball itself bouncier/floatier (BALL_GRAVITY/
+# BALL_RESTITUTION_GROUND above): a livelier ball reaches a slack
+# defensive line much faster than before, so the same advance fraction
+# that was safe for a heavier ball reopened the blowout tail once the
+# ball got livelier. 0.10 was the value found, together with the
+# retuned BALL_RESTITUTION_HEAD and KICK_IMPULSE_SPEED, by re-sweeping
 # candidates against 30+ simulated seeds and specifically tracking the
-# tail (not just the average) -- see tests/test_balance.py, which locks
-# in the tightened band as a regression guard.
-CPU_MAX_ADVANCE_FRACTION = 0.19
+# worst-case per-side score, not just the mean -- see tests/test_balance.py,
+# which locks in the tightened band as a regression guard.
+CPU_MAX_ADVANCE_FRACTION = 0.10
 # Below this perceived speed (px/sec) the ball is treated as having
 # stopped, not as a live attacking threat -- the defensive cap above is
 # lifted entirely so any CPU will always go and retrieve a dead ball
