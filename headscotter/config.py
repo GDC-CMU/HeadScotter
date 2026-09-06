@@ -35,15 +35,30 @@ def windowed_requested() -> bool:
 
 
 # --- Pitch geometry -----------------------------------------------------------
-# The HUD (score + clock) owns a strip across the top of the screen; the
-# pitch itself is the rectangle below it. All of these are pixel coordinates
-# in the 800x600 logical screen.
-HUD_HEIGHT = 110
+# Side-view head-soccer conventions, measured directly from seven independent
+# open-source implementations of the genre (see the project research report).
+# One of them runs at exactly this project's 800x600, so its numbers are used
+# unscaled wherever possible. There is deliberately no HUD band eating into
+# the pitch here -- the scoreboard is a small overlay near the top of the sky
+# (see render.py), not a strip that pushes the playfield down.
+#
+# The ground line is the single most important number in the genre: two
+# independent projects (one already at 800x600) land on exactly 0.833 * H.
+GROUND_Y = 500
 
-PITCH_TOP = 130       # invisible ceiling: the ball can never go above this
-GROUND_Y = 520         # the grass line: players' feet and a resting ball sit here
-PITCH_LEFT = 70        # left goal line (also the left player's movement limit)
-PITCH_RIGHT = 730      # right goal line (also the right player's movement limit)
+# Invisible ceiling: the ball can never go above this. Not directly sourced
+# (no implementation documents a ceiling height as a fraction of screen
+# height), chosen to sit just below the stadium's floodlight/roofline art so
+# a high header or a crossbar rebound has generous room to arc without ever
+# visually punching through the sky.
+PITCH_TOP = 40
+
+# Goal line flush with the screen edge -- sourced: five of six implementations
+# place the goal at x=0 / x=WIDTH exactly (a sixth insets by an near-flush
+# 1.3%). The previous build inset the goal line 70px into the pitch, which is
+# exactly the deviation the research report called out as non-standard.
+PITCH_LEFT = 0
+PITCH_RIGHT = SCREEN_WIDTH
 PITCH_CENTER_X = (PITCH_LEFT + PITCH_RIGHT) / 2.0
 
 # Goal mouth: the vertical gap, right at PITCH_LEFT/PITCH_RIGHT, that counts
@@ -51,30 +66,43 @@ PITCH_CENTER_X = (PITCH_LEFT + PITCH_RIGHT) / 2.0
 # GROUND_Y) is the open net; at or above it is the solid crossbar/post, which
 # just bounces the ball back into play like any other wall.
 #
-# A first balance pass shrank this to 60px (15% of the playfield) to fix a
-# simulated 90s CPU-vs-CPU match finishing 31-28 with no goalkeeper on
-# either end. That fixed the score, but broke the *look* of the goal: at
-# full size, with the goal barely half PLAYER_HEIGHT tall (Scotty could
-# not stand up in his own net) and an opening only ~1.8 ball-diameters
-# across, the goals read as small crates in the bottom corners rather
-# than goals, and scoring felt like squeezing through a slot rather than
-# beating a keeper. Restored to a size that reads as a real goal --
-# taller than a standing player, matching the two references below --
-# and the score is now held down by an actual keeper instead
-# (see KEEPER_* below and CPU_MAX_ADVANCE_FRACTION), which is what real
-# football and every 2D head-soccer clone with a credible-looking net
-# actually do:
-#  1. Real association football: a regulation goal is 2.44m tall; an average
-#     adult is roughly 1.75-1.83m, so a real goal is ~1.3-1.4x a player's
-#     standing height. 170px is ~1.5x this game's PLAYER_HEIGHT (112px).
-#  2. 2D "head soccer"-style clones commonly size the goal mouth at
-#     roughly 20-30% of the playfield's vertical extent; 170px is ~44%,
-#     which is taller than that band, but deliberately so -- see the
-#     clone research note on KEEPER_RADIUS below on why "as tall as a
-#     real net" and "hard to score in" are handled by two different
-#     constants now, not one.
-GOAL_MOUTH_HEIGHT = 170
-CROSSBAR_Y = GROUND_Y - GOAL_MOUTH_HEIGHT
+# Sourced: goal height ~0.333 * screen height (GeriiGarcia/HACKUPC26_P2P_Game,
+# which runs at this project's exact 800x600 resolution) -- 200px here, which
+# lands the crossbar exactly at half screen height, also matching that source.
+GOAL_MOUTH_HEIGHT = 200
+CROSSBAR_Y = GROUND_Y - GOAL_MOUTH_HEIGHT  # 300
+
+# Goal depth in profile (front post to back of net) -- sourced: ~0.10 *
+# screen width in the same reference implementation.
+GOAL_WIDTH = 80
+# Sourced convention: a solid ~10px crossbar is a real collision surface in
+# every serious implementation measured (tompashinsky, sp1099).
+CROSSBAR_THICKNESS = 10
+# Sourced convention band was 3-5px at each source's own resolution; bumped
+# up for readability at this project's pixel-art scale, per the report's own
+# note that a chunkier mesh (8-12px pitch) reads better at small scale than
+# the 20px pitch measured at higher resolutions.
+POST_THICKNESS = 8
+NET_MESH = 10
+NET_COLOR = (150, 150, 150)  # sourced: mid-grey, so the ball stays readable against it
+
+# --- Stadium backdrop geometry (art layout; consumed by render.py and
+# tools/generate_placeholders.py) --------------------------------------------
+GROUND_HEIGHT = SCREEN_HEIGHT - GROUND_Y  # 100 -- the grass strip below GROUND_Y
+# Scrolling advertising hoarding: sourced position/size convention (sits
+# directly above the grass, on the lower stadium band) from martinlhw/
+# Head_Soccer, rescaled proportionally from its 330-tall screen to this
+# project's 600-tall one (their band was 50/330 = 0.152 of H; 0.152*600 ~= 91,
+# but that source's crowd tiers ate far more vertical space than this build's
+# stadium art needs -- a slimmer 50px band reads just as well at this scale
+# and keeps more of the backdrop as legible crowd/stand art).
+HOARDING_HEIGHT = 50
+HOARDING_Y = GROUND_Y - HOARDING_HEIGHT  # 450 -- sits on the grass, per the source
+HOARDING_WIDTH = 560  # sourced (martinlhw's banner width, used verbatim)
+# Not sourced numerically -- the report documents that the hoarding "scrolls
+# continuously" but no implementation measures a speed. Chosen slow enough to
+# read as ambient background motion rather than a distraction.
+HOARDING_SCROLL_SPEED = 40.0  # px/sec
 
 # --- Player geometry ------------------------------------------------------------
 # Head-soccer characters are drawn with a big head and a small body; against
@@ -83,51 +111,77 @@ CROSSBAR_Y = GROUND_Y - GOAL_MOUTH_HEIGHT
 # whole bodies block one another (see players.separate_players()) so
 # closing distance actually means something. All distances below are from
 # the player's feet anchor (x, y), which is what players.Player.x/y track.
-HEAD_RADIUS = 34
-HEAD_OFFSET_Y = 78              # feet -> head-center vertical distance
-PLAYER_HALF_WIDTH = 30           # how close feet may get to a goal line/each other's clamp
-PLAYER_START_INSET = 170         # how far in from each goal line a kickoff starts
+#
+# Sourced: character height ~0.14 * screen height -- two independent sources
+# (GeriiGarcia and DucAnh1053) agree to three decimal places (85/600 and
+# 102/720 both round to 0.142).
+CHAR_HEIGHT = 85
+# Sourced: head diameter is 0.65-0.83 * total character height across every
+# genuine "big head" implementation measured. 64px (radius 32) is 0.75 of
+# CHAR_HEIGHT, comfortably inside that band.
+HEAD_RADIUS = 32
+# Derived, not independently chosen: feet -> head-center distance, so that
+# head-top (HEAD_OFFSET_Y + HEAD_RADIUS above the feet) lands exactly at
+# CHAR_HEIGHT above the ground -- this is what keeps the jump-to-crossbar
+# invariant (see tests/test_geometry_invariants.py) consistent by
+# construction instead of by coincidence.
+HEAD_OFFSET_Y = CHAR_HEIGHT - HEAD_RADIUS  # 53
+# NOT sourced -- the report has no measured body-width convention (most
+# clones draw little to no torso at all). Chosen so the body (40px wide)
+# reads clearly narrower than the head (64px diameter), matching every
+# reference's "big head, small/near-invisible body" silhouette, while
+# staying wide enough that player-vs-player contact still feels fair.
+PLAYER_HALF_WIDTH = 20
+# NOT sourced -- kickoff stand position. Chosen so both players start clear
+# of their own goal mouth (GOAL_WIDTH=80) with room to react, roughly midway
+# between their goal line and the center circle.
+PLAYER_START_INSET = 190
 # Approximate feet-to-head-top body height, used only to gate player-vs-
 # player separation on genuine vertical overlap (see players.separate_players()):
 # a jumping player whose feet have cleared the other's head height is
 # passing over them, which is a legitimate head-soccer move and must not
 # be blocked just because their footprints still overlap horizontally.
-PLAYER_HEIGHT = HEAD_OFFSET_Y + HEAD_RADIUS
+PLAYER_HEIGHT = HEAD_OFFSET_Y + HEAD_RADIUS  # 85 == CHAR_HEIGHT
 
 # --- Ball geometry & mass ------------------------------------------------------
-BALL_RADIUS = 17
+# Sourced: ball diameter ~0.05 * screen height (30px at 600) and ~0.45-0.55 *
+# head diameter -- 30/64 = 0.469, inside that band. The same reference
+# implementation that supplied the goal geometry above uses this exact value.
+BALL_RADIUS = 15
 
 # --- Movement --------------------------------------------------------------------
+# NOT sourced -- ground run speed has no measured cross-implementation
+# convention in the report. Kept at its previously-tuned value.
 PLAYER_SPEED = 260.0             # px/sec, flat ground run speed
-JUMP_VELOCITY = -560.0           # px/sec, initial upward velocity on jump (negative = up)
+# Sourced: jump velocity ~-13 px/frame at 60fps -> -780 px/sec. Apex =
+# v^2/(2g) = 780^2/(2*2160) ~= 141px, clearing the ~115px head-top-to-crossbar
+# gap this geometry produces (see tests/test_geometry_invariants.py) with
+# the margin the report describes.
+JUMP_VELOCITY = -780.0           # px/sec, initial upward velocity on jump (negative = up)
 
 # --- Gravity & drag --------------------------------------------------------------
-GRAVITY = 1450.0                 # px/sec^2, shared by the ball and both players
+# Sourced: gravity ~0.6 px/frame^2 at 60fps -> 2160 px/sec^2 -- "snappy, not
+# floaty", per the report's own characterization of the genre.
+GRAVITY = 2160.0                 # px/sec^2, shared by the ball and both players
 BALL_AIR_DRAG_PER_SEC = 0.35     # fraction of horizontal speed shed per second while airborne
 BALL_GROUND_FRICTION_PER_SEC = 620.0  # px/sec^2 horizontal deceleration while rolling on the ground
 
 # --- Bounce restitution (0 = dead stop, 1 = perfectly elastic) -------------------
-BALL_RESTITUTION_GROUND = 0.72
-BALL_RESTITUTION_WALL = 0.80
-# Deliberately below the wall/ground values: a header that preserved almost
-# all of a hard kick's speed created an unfun "pinball" rally that could
-# volley the length of the pitch and back off a single stationary head.
-# Found this during a headless full-match simulation against a passive
-# opponent, which is exactly the kind of edge case a real tuning pass is
-# for -- see the client's request in the project brief.
-#
-# Lowered further from an initial 0.55 during the goal/scoring-rate
-# balance pass (see GOAL_MOUTH_HEIGHT and CPU_MAX_ADVANCE_FRACTION):
-# headers, not kicks, turned out to be the main source of unrealistic
-# scoring once the goal was already shrunk and the CPU was already
-# playing more defensively -- a chain of two or three headers between
-# players could still build up enough speed to cross the whole pitch
-# regardless of how hard the ball was kicked (confirmed by simulating
-# with KICK_IMPULSE_SPEED cut by a third, which barely changed the
-# scoreline). 0.3 was the value, found by simulating full matches at
-# each candidate (see tests/test_balance.py), that -- together with the
-# other two changes -- reliably keeps scorelines single-digit-per-side.
-BALL_RESTITUTION_HEAD = 0.3
+# Sourced: 0.70 is the median and mode of seven independent measurements
+# (range 0.6-0.8) for the ground bounce; GeriiGarcia (this project's exact
+# resolution) also uses 0.7 for its side walls.
+BALL_RESTITUTION_GROUND = 0.70
+BALL_RESTITUTION_WALL = 0.70
+# NOT sourced as a distinct value -- no implementation in the report
+# separates a header bounce from the ordinary ground/wall restitution above.
+# With the goalkeeper removed (see the project brief: "the genre has no
+# goalkeeper"), defense now depends entirely on the CPU's own positioning
+# discipline (see CPU_MAX_ADVANCE_FRACTION below) rather than a last line of
+# defense, so this is tuned below the ground/wall value to keep a chain of
+# headers from building up enough speed to volley the length of the pitch.
+# 0.60 was the value found by simulating full CPU-vs-CPU matches after the
+# keeper's removal (see tests/test_balance.py) rather than guessed.
+BALL_RESTITUTION_HEAD = 0.60
 # Below this bounce speed the ball is considered at rest rather than left to
 # jitter in an ever-smaller "Zeno" bounce loop against the ground.
 BALL_MIN_BOUNCE_SPEED = 40.0
@@ -142,10 +196,14 @@ HEADER_LIFT = 60.0
 # --- Kicking -----------------------------------------------------------------------
 # The kick's hit-box is a rectangle in front of the player, at foot height,
 # sized (KICK_RANGE_X x KICK_RANGE_Y) and centered a half-width ahead of the
-# player in their facing direction.
-KICK_RANGE_X = 58.0
-KICK_RANGE_Y = 92.0
-KICK_IMPULSE_SPEED = 640.0       # px/sec, magnitude of the velocity a kick imparts
+# player in their facing direction. NOT sourced (no implementation measures
+# a kick hit-box); scaled down from the previous build's tuned values by the
+# same ratio the character shrank by (new PLAYER_HEIGHT 85 / old 112 ~=
+# 0.76), so the kick reach stays proportional to the now-smaller character
+# rather than reaching disproportionately far.
+KICK_RANGE_X = 44.0
+KICK_RANGE_Y = 70.0
+KICK_IMPULSE_SPEED = 560.0       # px/sec, magnitude of the velocity a kick imparts
 KICK_LAUNCH_ANGLE_DEG = 38.0     # above horizontal, in the kicker's facing direction
 KICK_COOLDOWN_SECONDS = 0.35     # minimum time between two kicks by the same player
 
@@ -169,32 +227,30 @@ CPU_JUMP_BALL_HEIGHT = 20.0
 # (so its lag applies to kicks too, not just movement).
 CPU_KICK_RANGE_X = KICK_RANGE_X
 CPU_KICK_RANGE_Y = KICK_RANGE_Y
-# Even with a real goalkeeper now defending the mouth (see KEEPER_* below),
-# a field player who fully committed forward on every attack would still
-# leave their own goal undefended between the moment they lose the ball
-# and the moment they can run all the way back -- and, visually, both
-# players simply chasing the ball everywhere is what caused the "glued
-# together in the middle of the pitch" look. This caps how far a CPU will
-# chase the ball away from its own goal, as a fraction of the full pitch
-# width, while the ball is a live attacking threat (see
-# CPU_RESTING_SPEED_PX for the exception). Chosen empirically, not
-# guessed: simulating dozens of full 90s CPU-vs-CPU matches per candidate
-# value found this was a knife-edge parameter -- too low (below ~0.30)
-# and both CPUs can't even reach the resting kickoff ball (0-0 forever);
-# too high (0.36+) and enough space opens up that scorelines rocket into
-# the double digits. A first pass landed on 0.39, but a later fix to a
-# bug in the CPU's own ballistic extrapolation (see
-# CPUController._perceive()) made its ball-tracking meaningfully more
-# accurate, which shifted this whole knife-edge lower -- 0.39 alone was
-# no longer enough once combined with that fix and the lowered
-# BALL_RESTITUTION_HEAD below. 0.32 was the value found by re-simulating
-# 150 seeds at a generous tick budget that reliably keeps scorelines
-# single-digit-per-side with zero non-terminating matches -- see
-# tests/test_balance.py, which locks this in as a regression guard. Kept
-# unchanged when the goalkeeper was added: re-simulating with the keeper
-# in place at this same value still held the target band, so there was
-# no reason to loosen the field players' own defensive discipline too.
-CPU_MAX_ADVANCE_FRACTION = 0.32
+# The genre has no goalkeeper (confirmed across every reference
+# implementation in the research report) -- each player, human or CPU,
+# defends their own goal directly. Without a keeper as a last line of
+# defense, this is the single most important defensive parameter in the
+# game: a field player who fully committed forward on every attack would
+# leave their own goal completely undefended between the moment they lose
+# the ball and the moment they can run all the way back -- and, visually,
+# both players simply chasing the ball everywhere is what caused the
+# "glued together in the middle of the pitch" look this replaces. This
+# caps how far a CPU will chase the ball away from its own goal, as a
+# fraction of the full pitch width, while the ball is a live attacking
+# threat (see CPU_RESTING_SPEED_PX for the exception). Chosen empirically,
+# not guessed: simulating dozens of full 90s CPU-vs-CPU matches per
+# candidate value, after the goalkeeper's removal, found this was a
+# knife-edge parameter -- too low and both CPUs can't even reach the
+# resting kickoff ball (0-0 forever); too high and enough space opens up
+# in front of an undefended goal that scorelines rocket into the double
+# digits. 0.20 was the value found by re-simulating 20 seeds at a
+# generous tick budget (together with BALL_RESTITUTION_HEAD and
+# KICK_IMPULSE_SPEED below) that reliably keeps scorelines single-digit-
+# per-side with zero non-terminating matches now that no keeper backstops
+# a missed defensive read -- see tests/test_balance.py, which locks this
+# in as a regression guard.
+CPU_MAX_ADVANCE_FRACTION = 0.20
 # Below this perceived speed (px/sec) the ball is treated as having
 # stopped, not as a live attacking threat -- the defensive cap above is
 # lifted entirely so any CPU will always go and retrieve a dead ball
@@ -219,42 +275,18 @@ CPU_RESTING_SPEED_PX = 50.0
 # defensive positioning during ordinary, actively-contested play.
 CPU_STALEMATE_SECONDS = 20.0
 
-# --- Goalkeeper ----------------------------------------------------------------
-# Every goal has its own automated keeper, in every mode (1P/2P/DEMO) --
-# not human- or CPU-field-player-controlled, exactly like the fixed,
-# always-present single keeper in 2D head-soccer clones that keep a
-# visually credible, real-sized net (see GOAL_MOUTH_HEIGHT above) rather
-# than shrinking the goal until scoring is merely rare. A keeper is a
-# simple vertical "paddle": it does not run, jump, or leave its line's
-# small forward depth, it only tracks the ball's height within the goal
-# mouth -- see keeper.py. It must be beatable (a reaction delay, a speed
-# cap, and aim error all below), not a wall: re-simulating the same full
-# CPU-vs-CPU matches used to tune CPU_MAX_ADVANCE_FRACTION, with the
-# keeper added and GOAL_MOUTH_HEIGHT restored to 170, was how every value
-# below was actually chosen -- see tests/test_balance.py for the
-# resulting scorelines this locks in.
-KEEPER_RADIUS = 32.0
-# Fixed horizontal distance from its own goal line the keeper stands at
-# -- a "six-yard box" depth, not a movable range; the keeper never
-# advances further than this to challenge a ball, which is what keeps it
-# beatable by a shot placed past it rather than through it.
-KEEPER_DEPTH = 55.0
-# px/sec vertical speed cap while moving to cover a shot -- a fast,
-# well-placed shot can still beat a keeper that isn't already covering
-# that height, which is deliberate.
-KEEPER_SPEED = 300.0
-# Same perception-lag pattern as the CPU field players (see
-# CPU_REACTION_DELAY_SECONDS): the keeper only re-reads the ball's height
-# on a fixed tick rather than every frame.
-KEEPER_REACTION_DELAY_SECONDS = 0.15
-# Random vertical aim error re-rolled every perception tick, so the
-# keeper is never pixel-accurate even once it has "seen" the ball.
-KEEPER_AIM_ERROR_PX = 18.0
-# Bounce restitution for a ball the keeper touches (0 = dead stop/catch,
-# 1 = perfectly elastic parry) -- softer than a header, since a keeper
-# smothering a shot should look like a save, not another bounce that
-# keeps the rally dangerous.
-KEEPER_RESTITUTION = 0.4
+# --- HUD ---------------------------------------------------------------------------
+# A compact scoreboard panel replacing the old 110px dark band across the
+# top of the screen (which ate a fifth of the playfield and, combined with
+# the top-down pitch markings, was one of the things that made the previous
+# build read as the wrong genre). Sourced convention: the report's HUD
+# section documents a top-centre scoreboard panel roughly W/3 x H/4 as
+# "well-supported" across the clones it measured; sized down further here
+# since this build's panel only needs to hold two score digits, a divider,
+# and a clock, not a full graphic scoreboard shell.
+SCOREBOARD_WIDTH = 260
+SCOREBOARD_HEIGHT = 70
+SCOREBOARD_TOP_Y = 8  # px from the top of the screen
 
 # --- Match rules -------------------------------------------------------------------
 MATCH_SECONDS = 90.0

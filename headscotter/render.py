@@ -1,10 +1,20 @@
-"""Rendering: draws players/ball/pitch from headscotter.assets surfaces,
-plus HUD, menu, and result-screen text.
+"""Rendering: draws the side-view stage (stadium, hoarding, ground, goals),
+players/ball, HUD, menu, and result-screen text.
 
 This is the one module that turns game state into pixels. Every piece of
 gameplay art comes from a PNG loaded through :mod:`headscotter.assets`;
 only HUD/menu text is drawn with pygame fonts, which is ordinary UI
 chrome, not gameplay art, and unaffected by an art swap.
+
+Draw order, back to front, is deliberate: stadium backdrop -> scrolling
+hoarding -> grass strip -> both goals -> both players -> the ball -> the
+HUD. Goals are drawn *before* the players/ball rather than split into a
+"behind" and "in-front" net layer (the two-layer "ball sinks into the
+net" trick some clones use): this project's asset list is one PNG per
+goal end (see assets/README.md), and on an arcade cabinet viewed from
+across a room, never letting the net mesh occlude the ball or a player
+standing in the goal mouth matters more than that extra bit of depth --
+so gameplay elements always render on top of the goal art, never behind it.
 """
 from __future__ import annotations
 
@@ -16,15 +26,14 @@ from . import assets, config
 from . import match as match_mod
 from .game import Game, GameState, MENU_ITEMS
 
-BACKGROUND_COLOR = (18, 100, 46)
-HUD_BG_COLOR = (12, 34, 20)
 HUD_TEXT_COLOR = (255, 255, 255)
 HUD_ACCENT_COLOR = (255, 210, 90)
-HUD_DIM_COLOR = (170, 200, 180)
+HUD_DIM_COLOR = (210, 220, 230)
 MENU_SELECT_COLOR = (255, 210, 90)
+MENU_BG_TOP = (30, 42, 70)
+MENU_BG_BOTTOM = (14, 20, 34)
 LEFT_TEAM_COLOR = (224, 196, 140)   # matches Scotty's placeholder coat
 RIGHT_TEAM_COLOR = (150, 190, 235)  # matches the rival's placeholder color
-LINE_COLOR = (240, 240, 240)
 
 _ANIM_INTERVAL = 0.12  # seconds per run-cycle frame
 
@@ -50,15 +59,15 @@ def _format_clock(seconds: float) -> str:
 
 
 def draw_frame(screen, game: Game) -> None:
-    screen.fill(BACKGROUND_COLOR)
     if game.state is GameState.ATTRACT:
+        _draw_menu_background(screen)
         _draw_menu(screen, game)
     elif game.state is GameState.HOW_TO_PLAY:
+        _draw_menu_background(screen)
         _draw_how_to_play(screen)
     elif game.state in (GameState.MATCH, GameState.DEMO):
-        _draw_pitch(screen)
+        _draw_stage(screen, game)
         _draw_goals(screen)
-        _draw_keepers(screen, game)
         _draw_players(screen, game)
         _draw_ball(screen, game)
         _draw_hud(screen, game)
@@ -66,54 +75,45 @@ def draw_frame(screen, game: Game) -> None:
         if game.state is GameState.DEMO:
             _draw_demo_banner(screen)
     elif game.state is GameState.RESULT:
-        _draw_pitch(screen)
+        _draw_stage(screen, game)
         _draw_goals(screen)
         _draw_result(screen, game)
 
 
-def _draw_pitch(screen) -> None:
-    bg = assets.get("pitch_bg")
-    screen.blit(bg, (0, 0))
-    # Halfway line, center circle, and touchline -- cheap chrome drawn
-    # directly, not gameplay art, so it never needs an asset swap.
-    pygame.draw.line(
-        screen, LINE_COLOR,
-        (config.PITCH_CENTER_X, config.PITCH_TOP), (config.PITCH_CENTER_X, config.GROUND_Y), 2,
-    )
-    pygame.draw.circle(screen, LINE_COLOR, (round(config.PITCH_CENTER_X), config.GROUND_Y), 60, 2)
-    pygame.draw.rect(
-        screen, LINE_COLOR,
-        (
-            config.PITCH_LEFT, config.PITCH_TOP,
-            config.PITCH_RIGHT - config.PITCH_LEFT, config.GROUND_Y - config.PITCH_TOP,
-        ),
-        2,
-    )
+def _draw_stage(screen, game: Game) -> None:
+    """Sky/stands/crowd, the scrolling advertising hoarding, then the
+    grass strip -- the side-view stage itself. No pitch markings are
+    drawn anywhere: the genre research report found zero side-view
+    head-soccer implementations that draw a centre circle, halfway
+    line, or boundary rectangle, and drawing one is exactly what made
+    the previous build read as a top-down pitch."""
+    screen.blit(assets.get("bg_stadium"), (0, 0))
+
+    hoarding = assets.get("bg_hoarding")
+    hoarding_w = hoarding.get_width()
+    offset = int(game.anim_clock * config.HOARDING_SCROLL_SPEED) % hoarding_w
+    x = -offset
+    while x < config.SCREEN_WIDTH:
+        screen.blit(hoarding, (x, config.HOARDING_Y))
+        x += hoarding_w
+
+    screen.blit(assets.get("ground"), (0, config.GROUND_Y))
 
 
 def _draw_goals(screen) -> None:
-    # The goal art is authored with its front post at the image's right
-    # edge (see tools/generate_placeholders.make_goal) so the goal mouth
-    # opens into the pitch and the net trails off into "out of bounds".
-    goal = assets.get("goal")
-    left_rect = goal.get_rect()
-    left_rect.bottomright = (config.PITCH_LEFT, config.GROUND_Y)
-    screen.blit(goal, left_rect)
+    # Anchored flush with each screen edge -- see
+    # tools/generate_placeholders.make_goal for why each image's outer
+    # edge (the back of the net) lines up with the screen boundary and
+    # its inner edge (the front post) opens into the pitch.
+    left = assets.get("goal_left")
+    left_rect = left.get_rect()
+    left_rect.bottomleft = (config.PITCH_LEFT, config.GROUND_Y)
+    screen.blit(left, left_rect)
 
-    flipped = pygame.transform.flip(goal, True, False)
-    right_rect = flipped.get_rect()
-    right_rect.bottomleft = (config.PITCH_RIGHT, config.GROUND_Y)
-    screen.blit(flipped, right_rect)
-
-
-def _draw_keepers(screen, game: Game) -> None:
-    left = assets.get("keeper_left")
-    rect = left.get_rect(center=(round(game.keeper_left.x), round(game.keeper_left.y)))
-    screen.blit(left, rect)
-
-    right = assets.get("keeper_right")
-    rect = right.get_rect(center=(round(game.keeper_right.x), round(game.keeper_right.y)))
-    screen.blit(right, rect)
+    right = assets.get("goal_right")
+    right_rect = right.get_rect()
+    right_rect.bottomright = (config.PITCH_RIGHT, config.GROUND_Y)
+    screen.blit(right, right_rect)
 
 
 def _player_sprite(game: Game, player) -> "pygame.Surface":
@@ -126,7 +126,7 @@ def _player_sprite(game: Game, player) -> "pygame.Surface":
         frame = 1 if int(game.anim_clock / _ANIM_INTERVAL) % 2 == 0 else 2
         name = f"{prefix}_run_{frame}"
     else:
-        name = f"{prefix}_run_1"
+        name = f"{prefix}_idle"
     surface = assets.get(name)
     if player.facing < 0:
         surface = pygame.transform.flip(surface, True, False)
@@ -156,51 +156,60 @@ def _team_labels(game: Game) -> Tuple[str, str]:
 
 
 def _draw_hud(screen, game: Game) -> None:
-    pygame.draw.rect(screen, HUD_BG_COLOR, (0, 0, config.SCREEN_WIDTH, config.HUD_HEIGHT))
-    pygame.draw.line(screen, HUD_ACCENT_COLOR, (0, config.HUD_HEIGHT), (config.SCREEN_WIDTH, config.HUD_HEIGHT), 2)
+    """A compact scoreboard panel near the top of the sky -- replacing
+    the old 110px dark band that ate a fifth of the playfield. It sits
+    on top of the stage, not embedded in it, so the pitch itself keeps
+    its full vertical extent."""
+    panel = assets.get("scoreboard")
+    panel_rect = panel.get_rect(midtop=(config.SCREEN_WIDTH // 2, config.SCOREBOARD_TOP_Y))
+    screen.blit(panel, panel_rect)
 
     m = game.match
     left_name, right_name = _team_labels(game)
+    cx = panel_rect.centerx
 
-    _draw_text(screen, left_name, 30, LEFT_TEAM_COLOR, (150, 32))
-    _draw_text(screen, str(m.score_left), 54, HUD_TEXT_COLOR, (150, 74))
+    _draw_text(screen, left_name, 18, LEFT_TEAM_COLOR, (panel_rect.left + 46, panel_rect.top + 14))
+    _draw_text(screen, str(m.score_left), 32, HUD_TEXT_COLOR, (panel_rect.left + 46, panel_rect.top + 40))
 
-    icon = assets.get("hud_ball_icon")
-    icon_rect = icon.get_rect(center=(config.SCREEN_WIDTH // 2, 60))
-    screen.blit(icon, icon_rect)
-
-    _draw_text(screen, right_name, 30, RIGHT_TEAM_COLOR, (config.SCREEN_WIDTH - 150, 32))
-    _draw_text(screen, str(m.score_right), 54, HUD_TEXT_COLOR, (config.SCREEN_WIDTH - 150, 74))
+    _draw_text(screen, right_name, 18, RIGHT_TEAM_COLOR, (panel_rect.right - 46, panel_rect.top + 14))
+    _draw_text(screen, str(m.score_right), 32, HUD_TEXT_COLOR, (panel_rect.right - 46, panel_rect.top + 40))
 
     if m.sudden_death:
-        _draw_text(screen, "SUDDEN DEATH", 28, HUD_ACCENT_COLOR, (config.SCREEN_WIDTH // 2, 90))
+        _draw_text(screen, "SUDDEN DEATH", 16, HUD_ACCENT_COLOR, (cx, panel_rect.bottom - 10))
     else:
-        _draw_text(screen, _format_clock(m.time_remaining), 46, HUD_ACCENT_COLOR, (config.SCREEN_WIDTH // 2, 92))
+        _draw_text(screen, _format_clock(m.time_remaining), 22, HUD_ACCENT_COLOR, (cx, panel_rect.bottom - 12))
 
 
 def _draw_phase_banner(screen, game: Game) -> None:
     m = game.match
     if m.phase is match_mod.MatchPhase.GOAL_CELEBRATION:
-        _draw_text(screen, "GOAL!", 72, HUD_ACCENT_COLOR, (config.SCREEN_WIDTH // 2, 300))
+        _draw_text(screen, "GOAL!", 72, HUD_ACCENT_COLOR, (config.SCREEN_WIDTH // 2, 250))
     elif m.phase is match_mod.MatchPhase.KICKOFF:
         # The very first kickoff of the match is the only moment the clock
         # still reads the full match length untouched; every restart after
         # a goal has already ticked down, so this distinguishes them for free.
         if m.time_remaining >= config.MATCH_SECONDS - 0.05 and m.last_scoring_side is None:
-            _draw_text(screen, "KICK OFF!", 48, HUD_TEXT_COLOR, (config.SCREEN_WIDTH // 2, 300))
+            _draw_text(screen, "KICK OFF!", 48, HUD_TEXT_COLOR, (config.SCREEN_WIDTH // 2, 250))
         else:
-            _draw_text(screen, "READY", 40, HUD_TEXT_COLOR, (config.SCREEN_WIDTH // 2, 300))
+            _draw_text(screen, "READY", 40, HUD_TEXT_COLOR, (config.SCREEN_WIDTH // 2, 250))
 
 
 def _draw_demo_banner(screen) -> None:
-    # Positioned in the clear grass strip just below the pitch boundary
-    # line (config.PITCH_TOP) and well above the center circle/keepers,
-    # so neither line collides with a pitch marking or any gameplay art.
-    _draw_text(screen, "DEMO", 24, HUD_DIM_COLOR, (config.SCREEN_WIDTH // 2, config.PITCH_TOP + 30))
+    _draw_text(screen, "DEMO", 22, HUD_DIM_COLOR, (config.SCREEN_WIDTH // 2, config.PITCH_TOP + 70))
     _draw_text(
-        screen, "PRESS START TO PLAY", 22, HUD_DIM_COLOR,
-        (config.SCREEN_WIDTH // 2, config.PITCH_TOP + 62),
+        screen, "PRESS START TO PLAY", 20, HUD_DIM_COLOR,
+        (config.SCREEN_WIDTH // 2, config.PITCH_TOP + 100),
     )
+
+
+def _draw_menu_background(screen) -> None:
+    """A simple vertical gradient matching the stadium's evening sky,
+    instead of the old flat pitch-green fill -- keeps the menu/how-to-
+    play/result screens visually part of the same game as the match."""
+    for y in range(config.SCREEN_HEIGHT):
+        t = y / (config.SCREEN_HEIGHT - 1)
+        color = tuple(round(a + (b - a) * t) for a, b in zip(MENU_BG_TOP, MENU_BG_BOTTOM))
+        pygame.draw.line(screen, color, (0, y), (config.SCREEN_WIDTH, y))
 
 
 def _draw_menu(screen, game: Game) -> None:
@@ -230,6 +239,8 @@ def _draw_how_to_play(screen) -> None:
         "A                  jump",
         "X                  kick the ball when it's right in front of you",
         "",
+        "There is no goalkeeper -- you defend your own goal.",
+        "",
         "Matches last 90 seconds. Tied at full time? Next goal wins -- sudden death.",
         "",
         "1 PLAYER is you against the CPU. 2 PLAYERS is head to head --",
@@ -241,7 +252,7 @@ def _draw_how_to_play(screen) -> None:
     for line in lines:
         if line:
             _draw_text(screen, line, 24, HUD_TEXT_COLOR, (config.SCREEN_WIDTH // 2, y))
-        y += 34
+        y += 32
 
 
 def _draw_result(screen, game: Game) -> None:
@@ -252,15 +263,15 @@ def _draw_result(screen, game: Game) -> None:
     else:
         headline = "LEFT PLAYER WINS!" if winner == "left" else "RIGHT PLAYER WINS!"
 
-    _draw_text(screen, headline, 60, HUD_ACCENT_COLOR, (config.SCREEN_WIDTH // 2, 220))
-    _draw_text(screen, f"{m.score_left} - {m.score_right}", 72, HUD_TEXT_COLOR, (config.SCREEN_WIDTH // 2, 310))
+    _draw_text(screen, headline, 60, HUD_ACCENT_COLOR, (config.SCREEN_WIDTH // 2, 200))
+    _draw_text(screen, f"{m.score_left} - {m.score_right}", 72, HUD_TEXT_COLOR, (config.SCREEN_WIDTH // 2, 290))
 
     if game.result_new_high_score:
-        _draw_text(screen, "NEW BEST: MOST GOALS IN A WIN!", 28, MENU_SELECT_COLOR, (config.SCREEN_WIDTH // 2, 380))
+        _draw_text(screen, "NEW BEST: MOST GOALS IN A WIN!", 28, MENU_SELECT_COLOR, (config.SCREEN_WIDTH // 2, 360))
     elif game.mode == "1P":
         _draw_text(
             screen, f"BEST GOALS IN A WIN: {game.result_high_score}", 24, HUD_DIM_COLOR,
-            (config.SCREEN_WIDTH // 2, 380),
+            (config.SCREEN_WIDTH // 2, 360),
         )
 
-    _draw_text(screen, "PRESS START", 28, HUD_TEXT_COLOR, (config.SCREEN_WIDTH // 2, 460))
+    _draw_text(screen, "PRESS START", 28, HUD_TEXT_COLOR, (config.SCREEN_WIDTH // 2, 440))

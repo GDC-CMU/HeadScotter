@@ -1,20 +1,22 @@
 #!/usr/bin/env python
 """Regenerate the committed placeholder sprite PNGs deterministically.
 
-Every shape here is drawn with fixed coordinates (no randomness), so
-running this script twice in a row leaves ``git status`` clean. Run it
-whenever a new logical sprite is added to
+Every shape here is drawn with fixed coordinates and formulaic (not random)
+variation, so running this script twice in a row leaves ``git status``
+clean. Run it whenever a new logical sprite is added to
 ``headscotter.assets.SPRITE_SPECS``, or any time you want to reset
 ``assets/sprites/`` back to the stock placeholder look.
 
-These placeholders are deliberately more than flat rectangles -- a
-shaggy-eared terrier for Scotty, a distinct antenna'd rival with a very
-different silhouette, a real soccer-ball pattern, and a proper goal
-frame -- so the repo looks intentional from the first clone. Real art
-can replace any file here with zero code changes; see ``assets/README.md``.
+This is a full side-view head-soccer stage, not a top-down pitch: a
+stadium backdrop (sky, tiered stands, a dithered crowd, floodlights), a
+scrolling advertising hoarding, and a flat grass strip -- see
+``assets/README.md`` and the project's genre research report for why a
+side-view game has no pitch markings at all. Real art can replace any
+file here with zero code changes.
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 from pathlib import Path
@@ -30,27 +32,37 @@ from headscotter import config  # noqa: E402
 from headscotter.assets import ASSETS_ROOT, SPRITE_SPECS  # noqa: E402
 
 pygame.init()
+pygame.font.init()
 
 TRANSPARENT = (0, 0, 0, 0)
 
-# Scotty: warm cream/tan coat (matches the club's other games' lesson that
-# a dark dog on a busy background disappears) with CMU-red trim.
+# --- Scotty: warm cream/tan coat with CMU-red trim ---------------------------------
 SCOTTY_BODY = (224, 196, 140)
 SCOTTY_SHADE = (188, 156, 100)
 SCOTTY_OUTLINE = (96, 72, 40)
 SCOTTY_TRIM = (196, 32, 48)
 
-# Rival: cool blue-grey with a completely different silhouette (antenna,
-# no ears, single big visor-eye instead of a snout) so the two are never
-# confusable even in pure silhouette.
+# --- Rival: cool blue-grey, a completely different silhouette -----------------------
 RIVAL_BODY = (150, 190, 235)
 RIVAL_SHADE = (108, 146, 196)
 RIVAL_OUTLINE = (40, 58, 92)
 RIVAL_TRIM = (255, 176, 40)
 
-GRASS_LIGHT = (36, 128, 60)
-GRASS_DARK = (28, 112, 52)
-STAND_COLOR = (30, 40, 34)
+# --- Stadium palette -----------------------------------------------------------------
+SKY_TOP = (94, 168, 224)
+SKY_HORIZON = (196, 224, 236)
+STAND_FAR = (58, 68, 82)
+STAND_MID = (46, 55, 68)
+STAND_NEAR = (36, 44, 56)
+FLOODLIGHT_COLOR = (40, 46, 56)
+FLOODLIGHT_GLOW = (255, 244, 200)
+CROWD_COLORS = [
+    (214, 60, 60), (240, 210, 90), (235, 235, 235), (70, 120, 200), (90, 170, 110),
+]
+GRASS_LIGHT = (58, 150, 76)
+GRASS_DARK = (46, 132, 64)
+GOAL_POST = (238, 238, 238)
+GOAL_OUTLINE = (55, 60, 65)
 
 
 def _surface(size):
@@ -59,12 +71,13 @@ def _surface(size):
     return surf
 
 
+def _lerp_color(c0, c1, t):
+    return tuple(round(a + (b - a) * t) for a, b in zip(c0, c1))
+
+
 # --- Scotty ------------------------------------------------------------------------
 def _scotty_head(surf, cx, head_cy, radius, mouth_open):
-    # Shaggy fur bumps around the back/top of the head.
     for angle in (150, 175, 200, 225):
-        import math
-
         bx = cx + radius * 0.85 * math.cos(math.radians(angle))
         by = head_cy + radius * 0.85 * math.sin(math.radians(angle))
         pygame.draw.circle(surf, SCOTTY_SHADE, (round(bx), round(by)), max(2, round(radius * 0.22)))
@@ -72,7 +85,6 @@ def _scotty_head(surf, cx, head_cy, radius, mouth_open):
     pygame.draw.circle(surf, SCOTTY_BODY, (round(cx), round(head_cy)), round(radius))
     pygame.draw.circle(surf, SCOTTY_OUTLINE, (round(cx), round(head_cy)), round(radius), 2)
 
-    # Two floppy, pointed ears on top.
     for side in (-1, 1):
         ex = cx + side * radius * 0.55
         ey = head_cy - radius * 0.65
@@ -88,7 +100,6 @@ def _scotty_head(surf, cx, head_cy, radius, mouth_open):
             1,
         )
 
-    # Snout, pushed toward the facing direction (right, mirrored in code).
     snout_cx = cx + radius * 0.92
     snout_cy = head_cy + radius * 0.18
     snout_rect = pygame.Rect(0, 0, radius * 0.95, radius * 0.7)
@@ -116,39 +127,48 @@ def make_scotty(size, pose, leg_phase=0):
     w, h = size
     surf = _surface(size)
     cx = w / 2.0
-    feet_y = h - 4
+    feet_y = h - 3
     radius = config.HEAD_RADIUS
     head_cy = h - config.HEAD_OFFSET_Y
 
-    body_top = head_cy + radius * 0.55
-    body_h = feet_y - body_top - 14
+    # The body only has a sliver of vertical room below the head at this
+    # scale (by design -- the genre's "big head, tiny body" silhouette),
+    # so it is drawn wide and starts right at the head's own edge (a
+    # small deliberate overlap for a seamless neck join) rather than
+    # trying to squeeze a separate neck gap in.
+    body_top = head_cy + radius * 0.68
+    body_h = max(10, feet_y - body_top - 8)
 
     if pose == "kick":
-        # Kicking leg extended forward (right) and up; planted leg back.
-        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx - 6, body_top + body_h), (cx - 14, feet_y), 10)
+        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx - 6, body_top + body_h * 0.7), (cx - 13, feet_y), 9)
         pygame.draw.line(
-            surf, SCOTTY_OUTLINE, (cx + 4, body_top + body_h * 0.6),
-            (cx + radius * 1.1, body_top + body_h * 0.15), 10,
+            surf, SCOTTY_OUTLINE, (cx + 4, body_top + body_h * 0.55),
+            (cx + radius * 1.15, head_cy + radius * 0.35), 9,
         )
     elif pose == "jump":
-        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx - 10, body_top + body_h * 0.5), (cx - 16, feet_y - 10), 10)
-        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx + 10, body_top + body_h * 0.5), (cx + 16, feet_y - 10), 10)
+        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx - 9, body_top + body_h * 0.5), (cx - 15, feet_y - 8), 9)
+        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx + 9, body_top + body_h * 0.5), (cx + 15, feet_y - 8), 9)
+    elif pose == "idle":
+        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx - 6, body_top + body_h * 0.4), (cx - 6, feet_y), 9)
+        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx + 6, body_top + body_h * 0.4), (cx + 6, feet_y), 9)
     else:  # run
-        offset = 14 if leg_phase == 1 else -14
-        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx - 6, body_top + body_h * 0.4), (cx - 6 + offset, feet_y), 10)
-        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx + 6, body_top + body_h * 0.4), (cx + 6 - offset, feet_y), 10)
+        offset = 12 if leg_phase == 1 else -12
+        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx - 6, body_top + body_h * 0.4), (cx - 6 + offset, feet_y), 9)
+        pygame.draw.line(surf, SCOTTY_OUTLINE, (cx + 6, body_top + body_h * 0.4), (cx + 6 - offset, feet_y), 9)
 
-    body_rect = pygame.Rect(0, 0, radius * 1.5, body_h)
+    body_rect = pygame.Rect(0, 0, radius * 1.7, body_h)
     body_rect.midtop = (cx, body_top)
     pygame.draw.ellipse(surf, SCOTTY_BODY, body_rect)
     pygame.draw.ellipse(surf, SCOTTY_OUTLINE, body_rect, 2)
-    # A CMU-red collar/jersey stripe across the chest.
-    pygame.draw.rect(surf, SCOTTY_TRIM, (body_rect.left + 4, body_rect.top + body_rect.height * 0.3, body_rect.width - 8, 6))
+    pygame.draw.rect(
+        surf, SCOTTY_TRIM,
+        (body_rect.left + 3, body_rect.top + body_rect.height * 0.35, body_rect.width - 6, 6),
+    )
 
-    # Short tail at the rear (left, opposite the snout).
+    tail_wag = 1.35 if pose == "idle" else 1.2
     pygame.draw.line(
         surf, SCOTTY_OUTLINE, (cx - radius * 0.9, head_cy + radius * 0.6),
-        (cx - radius * 1.35, head_cy + radius * 0.2), 6,
+        (cx - radius * tail_wag, head_cy + radius * 0.15), 5,
     )
 
     _scotty_head(surf, cx, head_cy, radius, mouth_open=(pose == "kick"))
@@ -160,14 +180,12 @@ def _rival_head(surf, cx, head_cy, radius):
     pygame.draw.circle(surf, RIVAL_BODY, (round(cx), round(head_cy)), round(radius))
     pygame.draw.circle(surf, RIVAL_OUTLINE, (round(cx), round(head_cy)), round(radius), 2)
 
-    # Two antenna instead of ears -- an unmistakably different silhouette.
     for side in (-1, 1):
         bx = cx + side * radius * 0.5
         by = head_cy - radius * 0.85
-        pygame.draw.line(surf, RIVAL_OUTLINE, (bx, by), (bx, by - radius * 0.5), 4)
+        pygame.draw.line(surf, RIVAL_OUTLINE, (bx, by), (bx, by - radius * 0.5), 3)
         pygame.draw.circle(surf, RIVAL_TRIM, (round(bx), round(by - radius * 0.5)), max(3, round(radius * 0.16)))
 
-    # One big visor-eye instead of a snout.
     visor_rect = pygame.Rect(0, 0, radius * 1.3, radius * 0.55)
     visor_rect.center = (cx + radius * 0.15, head_cy)
     pygame.draw.ellipse(surf, (20, 24, 30), visor_rect)
@@ -182,36 +200,37 @@ def make_rival(size, pose, leg_phase=0):
     w, h = size
     surf = _surface(size)
     cx = w / 2.0
-    feet_y = h - 4
+    feet_y = h - 3
     radius = config.HEAD_RADIUS
     head_cy = h - config.HEAD_OFFSET_Y
 
-    body_top = head_cy + radius * 0.55
-    body_h = feet_y - body_top - 14
+    body_top = head_cy + radius * 0.68
+    body_h = max(10, feet_y - body_top - 8)
 
     if pose == "kick":
-        pygame.draw.line(surf, RIVAL_OUTLINE, (cx - 6, body_top + body_h), (cx - 14, feet_y), 10)
+        pygame.draw.line(surf, RIVAL_OUTLINE, (cx - 6, body_top + body_h * 0.7), (cx - 13, feet_y), 9)
         pygame.draw.line(
-            surf, RIVAL_OUTLINE, (cx + 4, body_top + body_h * 0.6),
-            (cx + radius * 1.1, body_top + body_h * 0.15), 10,
+            surf, RIVAL_OUTLINE, (cx + 4, body_top + body_h * 0.55),
+            (cx + radius * 1.15, head_cy + radius * 0.35), 9,
         )
     elif pose == "jump":
-        pygame.draw.line(surf, RIVAL_OUTLINE, (cx - 10, body_top + body_h * 0.5), (cx - 16, feet_y - 10), 10)
-        pygame.draw.line(surf, RIVAL_OUTLINE, (cx + 10, body_top + body_h * 0.5), (cx + 16, feet_y - 10), 10)
+        pygame.draw.line(surf, RIVAL_OUTLINE, (cx - 9, body_top + body_h * 0.5), (cx - 15, feet_y - 8), 9)
+        pygame.draw.line(surf, RIVAL_OUTLINE, (cx + 9, body_top + body_h * 0.5), (cx + 15, feet_y - 8), 9)
+    elif pose == "idle":
+        pygame.draw.line(surf, RIVAL_OUTLINE, (cx - 6, body_top + body_h * 0.4), (cx - 6, feet_y), 9)
+        pygame.draw.line(surf, RIVAL_OUTLINE, (cx + 6, body_top + body_h * 0.4), (cx + 6, feet_y), 9)
     else:
-        offset = 14 if leg_phase == 1 else -14
-        pygame.draw.line(surf, RIVAL_OUTLINE, (cx - 6, body_top + body_h * 0.4), (cx - 6 + offset, feet_y), 10)
-        pygame.draw.line(surf, RIVAL_OUTLINE, (cx + 6, body_top + body_h * 0.4), (cx + 6 - offset, feet_y), 10)
+        offset = 12 if leg_phase == 1 else -12
+        pygame.draw.line(surf, RIVAL_OUTLINE, (cx - 6, body_top + body_h * 0.4), (cx - 6 + offset, feet_y), 9)
+        pygame.draw.line(surf, RIVAL_OUTLINE, (cx + 6, body_top + body_h * 0.4), (cx + 6 - offset, feet_y), 9)
 
-    # Rectangular jersey body (vs. Scotty's rounded body) -- another
-    # silhouette difference beyond color.
-    body_rect = pygame.Rect(0, 0, radius * 1.4, body_h)
+    body_rect = pygame.Rect(0, 0, radius * 1.6, body_h)
     body_rect.midtop = (cx, body_top)
-    pygame.draw.rect(surf, RIVAL_BODY, body_rect, border_radius=6)
-    pygame.draw.rect(surf, RIVAL_OUTLINE, body_rect, 2, border_radius=6)
+    pygame.draw.rect(surf, RIVAL_BODY, body_rect, border_radius=5)
+    pygame.draw.rect(surf, RIVAL_OUTLINE, body_rect, 2, border_radius=5)
     pygame.draw.rect(
         surf, RIVAL_TRIM,
-        (body_rect.left + 4, body_rect.top + body_rect.height * 0.3, body_rect.width - 8, 6),
+        (body_rect.left + 3, body_rect.top + body_rect.height * 0.35, body_rect.width - 6, 6),
     )
 
     _rival_head(surf, cx, head_cy, radius)
@@ -223,10 +242,9 @@ def make_ball(size):
     w, h = size
     surf = _surface(size)
     cx, cy = w / 2.0, h / 2.0
-    r = min(w, h) / 2.0 - 1.5
+    r = min(w, h) / 2.0 - 1.0
     pygame.draw.circle(surf, (250, 250, 250), (round(cx), round(cy)), round(r))
     pygame.draw.circle(surf, (30, 30, 30), (round(cx), round(cy)), round(r), 2)
-    # A simple pentagon-patch pattern, just enough to read as a soccer ball.
     pygame.draw.polygon(
         surf, (30, 30, 30),
         [
@@ -236,121 +254,204 @@ def make_ball(size):
         ],
     )
     for angle_deg in (90, 162, 234, 306, 18):
-        import math
-
         ax = cx + r * 0.8 * math.cos(math.radians(angle_deg))
         ay = cy + r * 0.8 * math.sin(math.radians(angle_deg))
         pygame.draw.line(surf, (30, 30, 30), (cx, cy - r * 0.5), (ax, ay), 1)
     return surf
 
 
-# --- Goal ----------------------------------------------------------------------------
-def make_goal(size):
-    """A goal frame authored so its RIGHT edge is the goal line (posts
-    facing into the pitch) and it extends left into "out of bounds" for
-    the net -- see render._draw_goals(), which anchors this image's
-    bottom-right corner at the pitch's goal line."""
+# --- Goals -------------------------------------------------------------------------
+def _draw_net(surf, x0, y0, x1, y1):
+    step = config.NET_MESH
+    for x in range(round(x0), round(x1) + 1, step):
+        pygame.draw.line(surf, config.NET_COLOR, (x, y0), (x, y1), 1)
+    for y in range(round(y0), round(y1) + 1, step):
+        pygame.draw.line(surf, config.NET_COLOR, (x0, y), (x1, y), 1)
+
+
+def make_goal(size, mirrored):
+    """A goal frame in profile, authored so the *front* post (the one
+    that opens into the pitch) sits on the pitch side of the canvas and
+    the *back* of the net sits flush with the screen edge -- see
+    render._draw_goals(), which anchors this image's bottom edge at the
+    goal line with the canvas's outer edge flush against the screen
+    boundary (config.PITCH_LEFT / PITCH_RIGHT).
+
+    ``mirrored=False`` draws a left-hand goal (back of net at the
+    canvas's left edge, front post at its right edge, opening rightward
+    into the pitch); ``mirrored=True`` flips that for the right-hand goal.
+    """
     w, h = size
     surf = _surface(size)
-    post_thickness = 10
-    crossbar_y = h - config.GOAL_MOUTH_HEIGHT
-    post_color = (245, 245, 245)
-    post_outline = (55, 60, 65)
-    net_color = (150, 175, 170, 160)
+    post_t = config.POST_THICKNESS
+    bar_t = config.CROSSBAR_THICKNESS
 
-    # Net hatching, drawn first so the frame sits on top of it.
-    step = 14
-    for x in range(0, w, step):
-        pygame.draw.line(surf, net_color, (x, crossbar_y), (x, h), 1)
-    for y in range(round(crossbar_y), h, step):
-        pygame.draw.line(surf, net_color, (0, y), (w, y), 1)
+    # Net hatching first, so the frame sits visibly on top of it.
+    _draw_net(surf, post_t, bar_t, w - post_t, h)
 
     def _post(rect):
-        pygame.draw.rect(surf, post_color, rect)
-        pygame.draw.rect(surf, post_outline, rect, 2)
+        pygame.draw.rect(surf, GOAL_POST, rect)
+        pygame.draw.rect(surf, GOAL_OUTLINE, rect, 2)
 
-    # Back post (left edge of the image, deepest into the net).
-    _post((0, crossbar_y, post_thickness, h - crossbar_y))
-    # Front post (right edge -- sits on the goal line).
-    _post((w - post_thickness, crossbar_y, post_thickness, h - crossbar_y))
-    # Crossbar joining them along the top of the goal mouth.
-    _post((0, crossbar_y, w, post_thickness))
+    _post((0, bar_t, post_t, h - bar_t))          # back post, flush with the screen edge
+    _post((w - post_t, bar_t, post_t, h - bar_t))  # front post, opens into the pitch
+    _post((0, 0, w, bar_t))                        # crossbar
+
+    if mirrored:
+        surf = pygame.transform.flip(surf, True, False)
     return surf
 
 
-# --- Pitch background ----------------------------------------------------------------
-def make_pitch_bg(size):
+def make_goal_left(size):
+    return make_goal(size, mirrored=False)
+
+
+def make_goal_right(size):
+    return make_goal(size, mirrored=True)
+
+
+# --- Stadium backdrop ----------------------------------------------------------------
+def make_bg_stadium(size):
+    """Sky, floodlights, tiered stands, and a dithered crowd -- what
+    replaces the old top-down green pitch wall. No pitch markings are
+    drawn anywhere in this file, on purpose: the genre research report
+    found zero side-view head-soccer implementations that draw a centre
+    circle, halfway line, or boundary rect.
+    """
     w, h = size
     surf = pygame.Surface(size)
-    surf.fill(STAND_COLOR)
-    pygame.draw.rect(surf, STAND_COLOR, (0, 0, w, config.PITCH_TOP))
-    stripe_w = 40
+
+    horizon = round(h * 0.62)
+    for y in range(horizon):
+        t = y / max(1, horizon - 1)
+        surf.fill(_lerp_color(SKY_TOP, SKY_HORIZON, t), (0, y, w, 1))
+
+    stand_top = round(h * 0.30)
+    tier_h = (h - stand_top) // 3
+    tiers = [
+        (stand_top, STAND_FAR),
+        (stand_top + tier_h, STAND_MID),
+        (stand_top + tier_h * 2, STAND_NEAR),
+    ]
+    for tier_y, color in tiers:
+        pygame.draw.rect(surf, color, (0, tier_y, w, h - tier_y))
+    # A thin lighter seam at the top edge of each tier -- reads as the
+    # parapet/step between tiers without drawing an actual 3D ledge.
+    for tier_y, color in tiers:
+        pygame.draw.rect(surf, _lerp_color(color, (255, 255, 255), 0.25), (0, tier_y, w, 3))
+
+    # Crowd: small figures on a deterministic formulaic scatter (not
+    # random.random(), so regenerating this file twice is byte-identical),
+    # sparse enough to read as individual spectators rather than a solid
+    # band -- roughly a third of each row is left as empty seat/gap, and
+    # the far tier's figures are smaller and more sparsely spaced than the
+    # near tier's, a cheap depth cue.
+    for tier_index, (tier_y, _color) in enumerate(tiers):
+        # Nearest tier (index 2) gets the biggest, densest figures.
+        dot_w = 4 + tier_index
+        dot_h = 5 + tier_index
+        col_pitch = 11 - tier_index  # far tier: sparser horizontally too
+        row_pitch = dot_h + 5
+        rows = max(1, (tier_h - 12) // row_pitch)
+        cols = w // col_pitch
+        for row in range(rows):
+            y = tier_y + 8 + row * row_pitch
+            for col in range(cols):
+                # Skip roughly a third of the slots so gaps between
+                # spectators are visible instead of a solid wall of color.
+                if (col * 7 + row * 3 + tier_index * 5) % 3 == 0:
+                    continue
+                x = col * col_pitch + ((row + tier_index) % 2) * (col_pitch // 2)
+                color = CROWD_COLORS[(col * 3 + row * 5 + tier_index * 7) % len(CROWD_COLORS)]
+                pygame.draw.rect(surf, color, (x, y, dot_w, dot_h))
+
+    # Floodlights: four poles with a glowing fixture, evenly spread.
+    for pole_x in (round(w * 0.08), round(w * 0.34), round(w * 0.66), round(w * 0.92)):
+        pygame.draw.rect(surf, FLOODLIGHT_COLOR, (pole_x - 3, 10, 6, stand_top))
+        head_rect = pygame.Rect(0, 0, 46, 20)
+        head_rect.center = (pole_x, 14)
+        pygame.draw.rect(surf, FLOODLIGHT_COLOR, head_rect, border_radius=3)
+        for i in range(5):
+            lx = head_rect.left + 6 + i * 8
+            pygame.draw.circle(surf, FLOODLIGHT_GLOW, (lx, head_rect.centery), 3)
+
+    # Perimeter wall band at the very bottom, behind where the scrolling
+    # hoarding sprite will be blitted on top (see config.HOARDING_Y).
+    pygame.draw.rect(surf, (24, 30, 36), (0, h - config.HOARDING_HEIGHT, w, config.HOARDING_HEIGHT))
+    return surf
+
+
+def make_bg_hoarding(size):
+    """A horizontal advertising band, blitted twice with a wrapping
+    offset by render.py for a continuous scroll (see
+    config.HOARDING_SCROLL_SPEED)."""
+    w, h = size
+    surf = pygame.Surface(size)
+    panel_w = w // 4
+    colors = [(196, 32, 48), (245, 245, 245), (30, 60, 130), (240, 200, 40)]
+    labels = ["HEADSCOTTER", "GAME DEV CLUB", "GO SCOTTY", "CMU ARCADE"]
+    font = pygame.font.Font(None, 26)
+    for i in range(4):
+        rect = pygame.Rect(i * panel_w, 0, panel_w, h)
+        surf.fill(colors[i], rect)
+        text_color = (250, 250, 250) if sum(colors[i]) < 400 else (25, 25, 30)
+        label = font.render(labels[i], True, text_color)
+        label_rect = label.get_rect(center=rect.center)
+        surf.blit(label, label_rect)
+    pygame.draw.rect(surf, (15, 15, 15), (0, 0, w, h), 2)
+    return surf
+
+
+def make_ground(size):
+    w, h = size
+    surf = pygame.Surface(size)
+    stripe_w = 44
     for i, x in enumerate(range(0, w, stripe_w)):
         color = GRASS_LIGHT if i % 2 == 0 else GRASS_DARK
-        pygame.draw.rect(surf, color, (x, config.PITCH_TOP, stripe_w, h - config.PITCH_TOP))
+        pygame.draw.rect(surf, color, (x, 0, stripe_w, h))
+    # A subtle lighter band along the very top edge -- the "front lip" of
+    # the grass nearest the pitch, giving the strip a touch of depth
+    # without any perspective drawing or pitch markings.
+    pygame.draw.rect(surf, _lerp_color(GRASS_LIGHT, (255, 255, 255), 0.12), (0, 0, w, 4))
     return surf
 
 
-def make_hud_ball_icon(size):
-    return make_ball(size)
-
-
-# --- Keepers -----------------------------------------------------------------------
-def make_keeper(size, body_color, outline_color, trim_color):
-    """A compact goalkeeper blob: a round body/head, a team-colored cap
-    band, two glove circles, and a simple face -- distinct from both
-    field-player silhouettes (no legs, no snout/antenna) since it never
-    runs or jumps, only glides vertically in the goal mouth."""
+# --- HUD scoreboard panel -----------------------------------------------------------
+def make_scoreboard(size):
     w, h = size
     surf = _surface(size)
-    cx, cy = w / 2.0, h / 2.0
-    radius = min(w, h) / 2.0 - 6
+    panel_rect = pygame.Rect(0, 0, w, h)
+    panel = pygame.Surface(size, pygame.SRCALPHA)
+    pygame.draw.rect(panel, (12, 20, 32, 210), panel_rect, border_radius=14)
+    pygame.draw.rect(panel, (240, 210, 90, 235), panel_rect, 3, border_radius=14)
+    surf.blit(panel, (0, 0))
 
-    pygame.draw.circle(surf, body_color, (round(cx), round(cy)), round(radius))
-    pygame.draw.circle(surf, outline_color, (round(cx), round(cy)), round(radius), 2)
-
-    cap_rect = pygame.Rect(0, 0, radius * 1.9, radius * 0.55)
-    cap_rect.center = (cx, cy - radius * 0.55)
-    pygame.draw.rect(surf, trim_color, cap_rect, border_radius=6)
-
-    glove_r = radius * 0.36
-    for side in (-1, 1):
-        gx = cx + side * radius * 0.98
-        gy = cy + radius * 0.1
-        pygame.draw.circle(surf, (250, 250, 250), (round(gx), round(gy)), round(glove_r))
-        pygame.draw.circle(surf, outline_color, (round(gx), round(gy)), round(glove_r), 1)
-
-    for dx in (-radius * 0.3, radius * 0.3):
-        ex, ey = cx + dx, cy - radius * 0.05
-        pygame.draw.circle(surf, (255, 255, 255), (round(ex), round(ey)), max(3, round(radius * 0.2)))
-        pygame.draw.circle(surf, (20, 20, 20), (round(ex), round(ey)), max(1, round(radius * 0.09)))
-
+    # A small baked-in ball icon as the score divider decoration.
+    cx, cy = w / 2.0, h * 0.42
+    r = h * 0.16
+    pygame.draw.circle(surf, (250, 250, 250), (round(cx), round(cy)), round(r))
+    pygame.draw.circle(surf, (30, 30, 30), (round(cx), round(cy)), round(r), 1)
     return surf
-
-
-def make_keeper_left(size):
-    return make_keeper(size, SCOTTY_BODY, SCOTTY_OUTLINE, SCOTTY_TRIM)
-
-
-def make_keeper_right(size):
-    return make_keeper(size, RIVAL_BODY, RIVAL_OUTLINE, RIVAL_TRIM)
 
 
 GENERATORS = {
+    "scotty_idle": lambda size: make_scotty(size, "idle"),
     "scotty_run_1": lambda size: make_scotty(size, "run", leg_phase=1),
     "scotty_run_2": lambda size: make_scotty(size, "run", leg_phase=2),
     "scotty_jump": lambda size: make_scotty(size, "jump"),
     "scotty_kick": lambda size: make_scotty(size, "kick"),
+    "rival_idle": lambda size: make_rival(size, "idle"),
     "rival_run_1": lambda size: make_rival(size, "run", leg_phase=1),
     "rival_run_2": lambda size: make_rival(size, "run", leg_phase=2),
     "rival_jump": lambda size: make_rival(size, "jump"),
     "rival_kick": lambda size: make_rival(size, "kick"),
     "ball": make_ball,
-    "goal": make_goal,
-    "pitch_bg": make_pitch_bg,
-    "keeper_left": make_keeper_left,
-    "keeper_right": make_keeper_right,
-    "hud_ball_icon": make_hud_ball_icon,
+    "goal_left": make_goal_left,
+    "goal_right": make_goal_right,
+    "bg_stadium": make_bg_stadium,
+    "bg_hoarding": make_bg_hoarding,
+    "ground": make_ground,
+    "scoreboard": make_scoreboard,
 }
 
 

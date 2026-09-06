@@ -20,6 +20,8 @@ from typing import Dict, Set, Tuple
 
 import pygame
 
+from . import config
+
 ASSETS_ROOT = Path(__file__).resolve().parent.parent / "assets"
 
 Size = Tuple[int, int]
@@ -27,25 +29,32 @@ Size = Tuple[int, int]
 # name -> (relative path under assets/, nominal pixel size)
 SPRITE_SPECS: Dict[str, Tuple[str, Size]] = {
     # Scotty -- the human/P1 character, CMU's mascot Scottish Terrier.
-    "scotty_run_1": ("sprites/scotty_run_1.png", (110, 150)),
-    "scotty_run_2": ("sprites/scotty_run_2.png", (110, 150)),
-    "scotty_jump": ("sprites/scotty_jump.png", (110, 150)),
-    "scotty_kick": ("sprites/scotty_kick.png", (110, 150)),
+    "scotty_idle": ("sprites/scotty_idle.png", (72, 90)),
+    "scotty_run_1": ("sprites/scotty_run_1.png", (72, 90)),
+    "scotty_run_2": ("sprites/scotty_run_2.png", (72, 90)),
+    "scotty_jump": ("sprites/scotty_jump.png", (72, 90)),
+    "scotty_kick": ("sprites/scotty_kick.png", (72, 90)),
     # Rival -- the CPU/P2 character, a distinct silhouette and color.
-    "rival_run_1": ("sprites/rival_run_1.png", (110, 150)),
-    "rival_run_2": ("sprites/rival_run_2.png", (110, 150)),
-    "rival_jump": ("sprites/rival_jump.png", (110, 150)),
-    "rival_kick": ("sprites/rival_kick.png", (110, 150)),
-    # The ball and the pitch itself.
-    "ball": ("sprites/ball.png", (36, 36)),
-    "goal": ("sprites/goal.png", (90, 200)),
-    "pitch_bg": ("sprites/pitch_bg.png", (800, 600)),
-    # The automated keepers -- one static pose each, team-colored to
-    # match the side they defend (see headscotter/keeper.py).
-    "keeper_left": ("sprites/keeper_left.png", (72, 72)),
-    "keeper_right": ("sprites/keeper_right.png", (72, 72)),
-    # HUD glyph: a small ball icon used as the "-" divider between scores.
-    "hud_ball_icon": ("sprites/hud_ball_icon.png", (32, 32)),
+    "rival_idle": ("sprites/rival_idle.png", (72, 90)),
+    "rival_run_1": ("sprites/rival_run_1.png", (72, 90)),
+    "rival_run_2": ("sprites/rival_run_2.png", (72, 90)),
+    "rival_jump": ("sprites/rival_jump.png", (72, 90)),
+    "rival_kick": ("sprites/rival_kick.png", (72, 90)),
+    # The ball.
+    "ball": ("sprites/ball.png", (30, 30)),
+    # Goals in profile, flush with each screen edge -- two distinct files
+    # (not one code-mirrored image) so a real art pass can draw each end
+    # with its own perspective/lighting if it wants to.
+    "goal_left": ("sprites/goal_left.png", (config.GOAL_WIDTH, config.GOAL_MOUTH_HEIGHT)),
+    "goal_right": ("sprites/goal_right.png", (config.GOAL_WIDTH, config.GOAL_MOUTH_HEIGHT)),
+    # The side-view stage: stadium backdrop (sky/stands/crowd/floodlights),
+    # a scrolling advertising hoarding, and the grass strip -- replaces the
+    # old top-down pitch_bg.png entirely. See assets/README.md.
+    "bg_stadium": ("sprites/bg_stadium.png", (config.SCREEN_WIDTH, config.GROUND_Y)),
+    "bg_hoarding": ("sprites/bg_hoarding.png", (config.HOARDING_WIDTH, config.HOARDING_HEIGHT)),
+    "ground": ("sprites/ground.png", (config.SCREEN_WIDTH, config.GROUND_HEIGHT)),
+    # The compact HUD scoreboard panel.
+    "scoreboard": ("sprites/scoreboard.png", (config.SCOREBOARD_WIDTH, config.SCOREBOARD_HEIGHT)),
 }
 
 PLACEHOLDER_COLOR = (255, 0, 255)  # unmissable magenta

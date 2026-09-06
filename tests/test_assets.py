@@ -64,13 +64,13 @@ class AssetLoaderTests(unittest.TestCase):
         capture = _Capture()
         sys.stderr = capture
         try:
-            assets.get("goal")
-            assets.get("goal")  # second call must not warn again
-            assets.get("goal")
+            assets.get("goal_left")
+            assets.get("goal_left")  # second call must not warn again
+            assets.get("goal_left")
         finally:
             sys.stderr = original_stderr
 
-        warning_lines = [line for line in capture.lines if "goal" in line]
+        warning_lines = [line for line in capture.lines if "goal_left" in line]
         self.assertEqual(len(warning_lines), 1)
 
     def test_unknown_sprite_name_raises_keyerror(self):
