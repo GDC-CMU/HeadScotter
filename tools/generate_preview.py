@@ -75,33 +75,33 @@ SEED = 20260115  # fixed: pins every CPUController aim-error roll the demo makes
 SIM_HZ = 60
 DT = 1.0 / SIM_HZ
 
-# Chosen by tracing this exact seed's demo after adding a real goalkeeper
-# (see headscotter/keeper.py and config.py's KEEPER_* / GOAL_MOUTH_HEIGHT)
-# and, later, the field-player-vs-keeper separation fix in players.py
-# (headscotter.separate_player_from_keeper): both changes shift bodies'
-# exact trajectories frame to frame, so these tick numbers are re-traced
-# after each such change rather than assumed stable. A defended,
-# full-size goal makes the first rally last considerably longer than an
-# undefended one (contested saves, not just an open net), so this window
-# time-lapses one whole kickoff-to-kickoff cycle rather than sampling it
-# tick-for-tick -- see the module docstring:
+# Chosen by tracing this exact seed's demo after the genre-accuracy
+# rebuild that removed the goalkeeper entirely (each player now defends
+# their own goal -- see headscotter/cpu.py's CPU_MAX_ADVANCE_FRACTION)
+# and retuned the ball/CPU constants for that change: without a keeper
+# backstopping a missed defensive read, the first rally resolves much
+# faster than the old defended-goal build did, so this window is
+# considerably shorter than before. These tick numbers are re-traced
+# after any change that shifts bodies' exact trajectories frame to
+# frame, rather than assumed stable -- this time-lapses one whole
+# kickoff-to-kickoff cycle rather than sampling it tick-for-tick -- see
+# the module docstring:
 #
-#   tick    0 : KICKOFF, ball at center (the window's opening frame)
-#   tick   71 : PLAYING begins -- sustained back-and-forth, saves, and rebounds
-#   tick 1476 : GOAL -- the keeper is finally beaten (score 0-1)
-#   tick 1597 : KICKOFF again, ball reset to center
-#   tick 1669 : PLAYING resumes -- the window's closing frame, a visual
-#               near-match for its own opening frame so the loop-back
-#               reads as another kickoff rather than a jump to a random
-#               moment.
-WINDOW_TICKS = 1669
+#   tick   0 : KICKOFF, ball at center (the window's opening frame)
+#   tick  71 : PLAYING begins -- the opening rally
+#   tick 399 : GOAL (score 0-1)
+#   tick 520 : KICKOFF again, ball reset to center
+#   tick 592 : PLAYING resumes -- the window's closing frame, a visual
+#              near-match for its own opening frame so the loop-back
+#              reads as another kickoff rather than a jump to a random
+#              moment.
+WINDOW_TICKS = 592
 
 FPS = 12  # independent of how the window was sampled -- see module docstring
-# 46 frames, evenly sampled across the whole WINDOW_TICKS span (not
-# consecutive ticks): 46/12 = ~3.83s, comfortably inside the launcher's
-# "roughly 1-3s" guidance's generous upper end and well under
-# MAX_PREVIEW_FRAMES=64.
-FRAME_COUNT = 46
+# 24 frames, evenly sampled across the whole WINDOW_TICKS span (not
+# consecutive ticks): 24/12 = 2.0s, comfortably inside the launcher's
+# "roughly 1-3s" guidance and well under MAX_PREVIEW_FRAMES=64.
+FRAME_COUNT = 24
 STRIDE_TICKS = WINDOW_TICKS / (FRAME_COUNT - 1)
 
 OUT_WIDTH, OUT_HEIGHT = 200, 150
