@@ -197,11 +197,17 @@ BALL_RESTITUTION_WALL = 0.70
 # With the goalkeeper removed (see the project brief: "the genre has no
 # goalkeeper"), defense now depends entirely on the CPU's own positioning
 # discipline (see CPU_MAX_ADVANCE_FRACTION below) rather than a last line of
-# defense, so this is tuned below the ground/wall value to keep a chain of
-# headers from building up enough speed to volley the length of the pitch.
-# 0.60 was the value found by simulating full CPU-vs-CPU matches after the
-# keeper's removal (see tests/test_balance.py) rather than guessed.
-BALL_RESTITUTION_HEAD = 0.60
+# defense. Counterintuitively, *raising* this value (a punchier defensive
+# header) tightens scoring rather than loosening it: a soft header
+# (a lower value) doesn't clear the ball away from danger, so it lingers
+# in the danger zone and gets poked back in -- confirmed by sweeping
+# candidates against full-match simulation (see tests/test_balance.py),
+# not assumed. 0.76 was the value found, alongside CPU_MAX_ADVANCE_FRACTION
+# and KICK_IMPULSE_SPEED below, that reliably keeps per-side scorelines in
+# the sourced "low single digits" band (the report: "typical scorelines are
+# low single digits (0-5)" per side) without the double-digit-per-side tail
+# an earlier pass had.
+BALL_RESTITUTION_HEAD = 0.76
 # Below this bounce speed the ball is considered at rest rather than left to
 # jitter in an ever-smaller "Zeno" bounce loop against the ground.
 BALL_MIN_BOUNCE_SPEED = 40.0
@@ -223,7 +229,13 @@ HEADER_LIFT = 60.0
 # rather than reaching disproportionately far.
 KICK_RANGE_X = 44.0
 KICK_RANGE_Y = 70.0
-KICK_IMPULSE_SPEED = 560.0       # px/sec, magnitude of the velocity a kick imparts
+# NOT sourced as an exact figure -- re-tuned alongside BALL_RESTITUTION_HEAD
+# and CPU_MAX_ADVANCE_FRACTION during the scoring-tail tightening pass (see
+# tests/test_balance.py): 530 was the value found, by the same
+# sweep-and-simulate method, that keeps a deliberate kick feeling like a
+# real strike without letting a chain of kicks alone blow the scoreline
+# past the sourced "low single digits per side" band.
+KICK_IMPULSE_SPEED = 530.0       # px/sec, magnitude of the velocity a kick imparts
 KICK_LAUNCH_ANGLE_DEG = 38.0     # above horizontal, in the kicker's facing direction
 KICK_COOLDOWN_SECONDS = 0.35     # minimum time between two kicks by the same player
 
@@ -264,13 +276,17 @@ CPU_KICK_RANGE_Y = KICK_RANGE_Y
 # knife-edge parameter -- too low and both CPUs can't even reach the
 # resting kickoff ball (0-0 forever); too high and enough space opens up
 # in front of an undefended goal that scorelines rocket into the double
-# digits. 0.20 was the value found by re-simulating 20 seeds at a
-# generous tick budget (together with BALL_RESTITUTION_HEAD and
-# KICK_IMPULSE_SPEED below) that reliably keeps scorelines single-digit-
-# per-side with zero non-terminating matches now that no keeper backstops
-# a missed defensive read -- see tests/test_balance.py, which locks this
-# in as a regression guard.
-CPU_MAX_ADVANCE_FRACTION = 0.20
+# digits. A first pass landed on 0.20, which kept every match terminating
+# and single-digit per side on average, but left a long tail of
+# occasional teens-per-match blowouts on the high end -- outside the
+# sourced convention (the report: "typical scorelines are low single
+# digits (0-5)" per side, from martinlhw/Head_Soccer's first-to-5 games).
+# 0.19 was the value found, together with the retuned
+# BALL_RESTITUTION_HEAD and KICK_IMPULSE_SPEED below, by re-sweeping
+# candidates against 30+ simulated seeds and specifically tracking the
+# tail (not just the average) -- see tests/test_balance.py, which locks
+# in the tightened band as a regression guard.
+CPU_MAX_ADVANCE_FRACTION = 0.19
 # Below this perceived speed (px/sec) the ball is treated as having
 # stopped, not as a live attacking threat -- the defensive cap above is
 # lifted entirely so any CPU will always go and retrieve a dead ball

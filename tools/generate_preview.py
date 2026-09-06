@@ -75,33 +75,34 @@ SEED = 20260115  # fixed: pins every CPUController aim-error roll the demo makes
 SIM_HZ = 60
 DT = 1.0 / SIM_HZ
 
-# Chosen by tracing this exact seed's demo after the genre-accuracy
-# rebuild that removed the goalkeeper entirely (each player now defends
-# their own goal -- see headscotter/cpu.py's CPU_MAX_ADVANCE_FRACTION)
-# and retuned the ball/CPU constants for that change: without a keeper
-# backstopping a missed defensive read, the first rally resolves much
-# faster than the old defended-goal build did, so this window is
-# considerably shorter than before. These tick numbers are re-traced
-# after any change that shifts bodies' exact trajectories frame to
-# frame, rather than assumed stable -- this time-lapses one whole
-# kickoff-to-kickoff cycle rather than sampling it tick-for-tick -- see
-# the module docstring:
+# Chosen by tracing this exact seed's demo. These tick numbers are
+# re-traced after any change that shifts bodies' exact trajectories
+# frame to frame (physics, CPU behaviour, or balance constants) rather
+# than assumed stable -- most recently after tightening the CPU's
+# defensive discipline (CPU_MAX_ADVANCE_FRACTION) and the ball's header/
+# kick feel (BALL_RESTITUTION_HEAD, KICK_IMPULSE_SPEED) to close a
+# double-digit-per-side scoring tail: a genuinely more disciplined
+# defense makes the opening rally noticeably longer before the first
+# goal than an easier-to-score-against build does, which is exactly the
+# point of that change. This time-lapses one whole kickoff-to-kickoff
+# cycle rather than sampling it tick-for-tick -- see the module docstring:
 #
-#   tick   0 : KICKOFF, ball at center (the window's opening frame)
-#   tick  71 : PLAYING begins -- the opening rally
-#   tick 399 : GOAL (score 0-1)
-#   tick 520 : KICKOFF again, ball reset to center
-#   tick 592 : PLAYING resumes -- the window's closing frame, a visual
-#              near-match for its own opening frame so the loop-back
-#              reads as another kickoff rather than a jump to a random
-#              moment.
-WINDOW_TICKS = 592
+#   tick    0 : KICKOFF, ball at center (the window's opening frame)
+#   tick   71 : PLAYING begins -- the opening rally
+#   tick 1400 : GOAL (score 0-1)
+#   tick 1521 : KICKOFF again, ball reset to center
+#   tick 1593 : PLAYING resumes -- the window's closing frame, a visual
+#               near-match for its own opening frame so the loop-back
+#               reads as another kickoff rather than a jump to a random
+#               moment.
+WINDOW_TICKS = 1593
 
 FPS = 12  # independent of how the window was sampled -- see module docstring
-# 24 frames, evenly sampled across the whole WINDOW_TICKS span (not
-# consecutive ticks): 24/12 = 2.0s, comfortably inside the launcher's
-# "roughly 1-3s" guidance and well under MAX_PREVIEW_FRAMES=64.
-FRAME_COUNT = 24
+# 32 frames, evenly sampled across the whole WINDOW_TICKS span (not
+# consecutive ticks): 32/12 ~= 2.67s, comfortably inside the launcher's
+# "roughly 1-3s" guidance's generous upper end and well under
+# MAX_PREVIEW_FRAMES=64.
+FRAME_COUNT = 32
 STRIDE_TICKS = WINDOW_TICKS / (FRAME_COUNT - 1)
 
 OUT_WIDTH, OUT_HEIGHT = 200, 150
