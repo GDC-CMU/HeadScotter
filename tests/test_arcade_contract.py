@@ -26,7 +26,7 @@ import pygame  # noqa: E402
 
 from headscotter import config  # noqa: E402
 from headscotter import match as match_mod  # noqa: E402
-from headscotter.game import Game, GameState  # noqa: E402
+from headscotter.game import Game, GameState, PAUSE_ITEMS  # noqa: E402
 from headscotter.input import RawInput  # noqa: E402
 from headscotter import players, physics  # noqa: E402
 
@@ -469,13 +469,14 @@ class LiveActionContractTests(unittest.TestCase):
             player.kick_cooldown = 0.9
             buttons = [frozenset(), frozenset()]
             buttons[device] = frozenset({2})
-            with patch("headscotter.audio.play") as play:
+            with patch.object(game.feedback, "shot", wraps=game.feedback.shot) as shot:
                 for _ in range(5):
                     game.ball = physics.Ball(player.x + player.facing * 40, player.y - 10)
                     game.update(1 / 60, RawInput(buttons_by_device=tuple(buttons)))
                     self.assertGreater(game.ball.vx * player.facing, 0)
                     game.update(1 / 60, RawInput())
-                self.assertEqual(sum(call.args == ("kick",) for call in play.call_args_list), 5)
+                self.assertEqual(shot.call_count, 5)
+                self.assertTrue(all(call.args[1] is False for call in shot.call_args_list))
             self.assertGreater(player.kick_cooldown, 0)
 
     def test_power_charge_release_and_jump_are_separate_for_both_players(self):
@@ -563,11 +564,11 @@ class PauseContractTests(unittest.TestCase):
         self.assertEqual(game.state, GameState.PAUSED)  # held confirm cannot resume
         game.update(self.DT, RawInput(pressed_keys=old | {"escape"}))
         self.assertEqual(game.state, GameState.MATCH)
-        with patch("headscotter.audio.play") as play:
+        with patch.object(game.feedback, "shot", wraps=game.feedback.shot) as shot:
             for _ in range(10):
                 game.update(self.DT, RawInput(pressed_keys=old))
             game.update(self.DT, RawInput())  # old power release must not shoot
-            play.assert_not_called()
+            shot.assert_not_called()
         self.assertEqual(game.player_left.kick_charge, 0)
         self.assertTrue(game.player_left.on_ground)
         self.assertFalse(game.player_left.just_kicked)
@@ -583,7 +584,9 @@ class PauseContractTests(unittest.TestCase):
         game.update(self.DT, RawInput(pressed_keys=frozenset({"escape"})))
         game.update(self.DT, RawInput())
         with patch("headscotter.match.maybe_record_high_score") as record:
-            game.update(self.DT, RawInput(pressed_keys=frozenset({"down"})))
+            for _ in range(PAUSE_ITEMS.index("MAIN MENU")):
+                game.update(self.DT, RawInput(pressed_keys=frozenset({"down"})))
+                game.update(self.DT, RawInput())
             game.update(self.DT, RawInput(pressed_keys=frozenset({"return"})))
             self.assertEqual(game.state, GameState.ATTRACT)
             for _ in range(10):

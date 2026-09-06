@@ -40,6 +40,7 @@ class Player:
     #: (now variable, see config.POWER_SHOT_*) cooldown length.
     kick_pose_timer: float = 0.0
     sprite_key: str = "scotty"
+    vx: float = 0.0  # actual constrained world velocity, not a facing guess
 
     @property
     def head_center(self) -> Tuple[float, float]:
@@ -87,12 +88,28 @@ def apply_move(player: Player, move: int, dt: float) -> None:
     player.moving = move != 0
     if move != 0:
         player.facing = 1 if move > 0 else -1
+    old_x = player.x
     player.x += move * config.PLAYER_SPEED * dt
     player.x = physics.clamp(
         player.x,
         config.PITCH_LEFT + config.PLAYER_HALF_WIDTH,
         config.PITCH_RIGHT - config.PLAYER_HALF_WIDTH,
     )
+    player.vx = (player.x - old_x) / dt if dt > 0.0 else 0.0
+
+
+def prepare_motion(player: Player, move: int, jump_pressed: bool) -> None:
+    """Resolve intent once, before shots. World stepping performs the motion."""
+    player.moving = move != 0
+    player.vx = move * config.PLAYER_SPEED
+    if (move < 0 and player.x <= config.PITCH_LEFT + config.PLAYER_HALF_WIDTH) or (
+        move > 0 and player.x >= config.PITCH_RIGHT - config.PLAYER_HALF_WIDTH
+    ):
+        player.vx = 0.0
+    if move:
+        player.facing = move
+    if jump_pressed:
+        apply_jump(player)
 
 
 def apply_jump(player: Player) -> None:
@@ -101,13 +118,19 @@ def apply_jump(player: Player) -> None:
         player.on_ground = False
 
 
-def step_player_physics(player: Player, dt: float) -> None:
+def step_player_physics(player: Player, dt: float, *, tick_timers: bool = True) -> None:
+    old_vy = player.vy
     player.vy = physics.apply_gravity(player.vy, dt)
-    player.y += player.vy * dt
+    player.y += (old_vy + player.vy) * 0.5 * dt
     if player.y >= config.GROUND_Y:
         player.y = config.GROUND_Y
         player.vy = 0.0
         player.on_ground = True
+    if tick_timers:
+        advance_timers(player, dt)
+
+
+def advance_timers(player: Player, dt: float) -> None:
     if player.kick_cooldown > 0.0:
         player.kick_cooldown = max(0.0, player.kick_cooldown - dt)
     if player.kick_pose_timer > 0.0:
@@ -126,9 +149,9 @@ def update_player(player: Player, dt: float, move: int, jump_pressed: bool) -> N
 
 def separate_players(a: Player, b: Player) -> bool:
     """Push two overlapping player bodies apart horizontally so they can
-    never interpenetrate. Call this once per frame after both players
-    have moved (:func:`update_player`) and before any ball interaction,
-    so a kick/header resolves from an already-legal, separated position.
+    never interpenetrate. World stepping uses this for horizontal approaches
+    on each bounded substep; landings are resolved on the vertical approach
+    axis instead of shoving a grounded neighbour through a nearby ball.
 
     Gated on overlap in **both** axes -- horizontal (each player's
     ``PLAYER_HALF_WIDTH``-wide footprint) and vertical (each player's
@@ -229,8 +252,8 @@ def _strike(player: Player, ball: Ball, fraction: float) -> KickResult:
         config.POWER_SHOT_LAUNCH_ANGLE_DEG - config.KICK_LAUNCH_ANGLE_DEG
     ) * fraction
     angle = math.radians(angle_deg)
-    ball.vx = player.facing * speed * math.cos(angle)
-    ball.vy = -speed * math.sin(angle)
+    ball.vx = player.vx + player.facing * speed * math.cos(angle)
+    ball.vy = player.vy - speed * math.sin(angle)
     physics._cap_speed(ball)
     return KickResult(fired=True, is_power_shot=fraction >= 0.5)
 
@@ -282,7 +305,7 @@ def apply_head_collision(
         extra_lift=config.HEADER_LIFT,
         on_impact=on_impact,
         contact_id=f"head:{player.sprite_key}",
-        collider_velocity=(config.PLAYER_SPEED * player.facing if player.moving else 0.0, player.vy),
+        collider_velocity=(player.vx, player.vy),
     )
 
 
@@ -297,4 +320,6 @@ def apply_body_collision(player: Player, ball: Ball) -> bool:
     head circle used to be the *only* collider on the whole body.
     """
     left, top, right, bottom = body_rect(player)
-    return physics.resolve_circle_aabb_collision(ball, left, top, right, bottom, config.BALL_RESTITUTION_BODY)
+    return physics.resolve_circle_aabb_collision(
+        ball, left, top, right, bottom, config.BALL_RESTITUTION_BODY, (player.vx, player.vy)
+    )

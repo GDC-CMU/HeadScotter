@@ -26,7 +26,7 @@ import pygame
 
 from . import assets, config
 from . import match as match_mod
-from .game import Game, GameState, MENU_ITEMS, PAUSE_ITEMS
+from .game import Game, GameState, MENU_ITEMS, PAUSE_ITEMS, RESULT_ITEMS
 
 HUD_TEXT_COLOR = (255, 255, 255)
 HUD_ACCENT_COLOR = (255, 210, 90)
@@ -35,8 +35,8 @@ MENU_SELECT_COLOR = (255, 210, 90)
 MENU_BG_TOP = (30, 42, 70)
 MENU_BG_BOTTOM = (14, 20, 34)
 MENU_ROW_BG = (48, 56, 74)
-MENU_ROW_Y = 280
-MENU_ROW_SPACING = 62
+MENU_ROW_Y = 250
+MENU_ROW_SPACING = 58
 MENU_ROW_SIZE = 34
 FOOTER_Y = 570
 LEFT_TEAM_COLOR = (224, 196, 140)   # matches Scotty's placeholder coat
@@ -45,6 +45,21 @@ RIGHT_TEAM_COLOR = (150, 190, 235)  # matches the rival's placeholder color
 _ANIM_INTERVAL = 0.12  # seconds per run-cycle frame
 
 _font_cache = {}
+
+
+def clear_caches() -> None:
+    """Drop SDL-owned resources before a display/font lifetime ends."""
+    _font_cache.clear()
+    _menu_background.cache_clear()
+    _menu_scene_veil.cache_clear()
+    _menu_backplate.cache_clear()
+    _scrim.cache_clear()
+    _portrait.cache_clear()
+    _goal_accent.cache_clear()
+    _spinning_ball.cache_clear()
+    _ball_stamp.cache_clear()
+    _impact_ring.cache_clear()
+    assets.clear_cache()
 
 
 def _font(size: int) -> "pygame.font.Font":
@@ -72,19 +87,15 @@ def _lerp_color(c0, c1, t):
 
 def draw_frame(screen, game: Game) -> None:
     if game.state is GameState.ATTRACT:
-        _draw_menu_background(screen)
+        _draw_stage(screen, game)
+        screen.blit(_menu_scene_veil(), (0, 0))
+        screen.blit(_menu_backplate(), (180, 65))
         _draw_menu(screen, game)
     elif game.state is GameState.HOW_TO_PLAY:
         _draw_menu_background(screen)
         _draw_how_to_play(screen, game)
     elif game.state in (GameState.MATCH, GameState.DEMO, GameState.PAUSED):
-        _draw_stage(screen, game)
-        _draw_goals(screen)
-        _draw_players(screen, game)
-        _draw_charge_indicator(screen, game.player_left)
-        _draw_charge_indicator(screen, game.player_right)
-        _draw_ball(screen, game)
-        _draw_hud(screen, game)
+        _draw_match_scene(screen, game)
         if game.state is not GameState.PAUSED:
             _draw_phase_banner(screen, game)
         if game.state is GameState.DEMO:
@@ -93,8 +104,20 @@ def draw_frame(screen, game: Game) -> None:
             _draw_pause(screen, game)
     elif game.state is GameState.RESULT:
         _draw_stage(screen, game)
-        _draw_goals(screen)
+        _draw_goals(screen, game)
         _draw_result(screen, game)
+
+
+def _draw_match_scene(screen, game: Game) -> None:
+    _draw_stage(screen, game)
+    _draw_goals(screen, game)
+    _draw_ball_motion(screen, game)
+    _draw_players(screen, game)
+    _draw_charge_indicator(screen, game.player_left, game.feedback.ready_remaining[0])
+    _draw_charge_indicator(screen, game.player_right, game.feedback.ready_remaining[1])
+    _draw_ball(screen, game)
+    _draw_impacts(screen, game)
+    _draw_hud(screen, game)
 
 
 def _draw_stage(screen, game: Game) -> None:
@@ -114,7 +137,8 @@ def _draw_stage(screen, game: Game) -> None:
     # instead, so the hoarding never appears to run through the net.
     hoarding = assets.get("bg_hoarding")
     hoarding_w = hoarding.get_width()
-    offset = int(game.anim_clock * config.HOARDING_SCROLL_SPEED) % hoarding_w
+    clock = game.attract_clock * 0.4 if game.state is GameState.ATTRACT else game.anim_clock
+    offset = int(clock * config.HOARDING_SCROLL_SPEED) % hoarding_w
     span_left = config.HOARDING_SPAN_LEFT
     span_width = config.HOARDING_SPAN_RIGHT - config.HOARDING_SPAN_LEFT
     previous_clip = screen.get_clip()
@@ -128,7 +152,7 @@ def _draw_stage(screen, game: Game) -> None:
     screen.blit(assets.get("ground"), (0, config.GROUND_SPRITE_Y))
 
 
-def _draw_goals(screen) -> None:
+def _draw_goals(screen, game: Game | None = None) -> None:
     # Anchored flush with each screen edge -- see
     # tools/generate_placeholders.make_goal for why each image's outer
     # edge (the back of the net) lines up with the screen boundary and
@@ -142,6 +166,20 @@ def _draw_goals(screen) -> None:
     right_rect = right.get_rect()
     right_rect.bottomright = (config.PITCH_RIGHT, config.GROUND_Y)
     screen.blit(right, right_rect)
+    if game is not None and game.feedback.goal_side is not None:
+        fade = max(0.0, 1.0 - game.feedback.goal_age / config.GOAL_FEEDBACK_SECONDS)
+        if fade:
+            source, rect = (right, right_rect) if game.feedback.goal_side == "left" else (left, left_rect)
+            glow = _goal_accent(source).copy()
+            glow.set_alpha(round(160 * fade))
+            screen.blit(glow, rect)
+
+
+@lru_cache(maxsize=2)
+def _goal_accent(source):
+    result = source.copy()
+    result.fill((255, 210, 90, 255), special_flags=pygame.BLEND_RGBA_MULT)
+    return result
 
 
 def _player_sprite(game: Game, player) -> "pygame.Surface":
@@ -174,12 +212,9 @@ _CHARGE_BAR_COLOR_LOW = (255, 210, 90)
 _CHARGE_BAR_COLOR_HIGH = (240, 60, 60)
 
 
-def _draw_charge_indicator(screen, player) -> None:
-    """A small meter above a charging player's head, so the power-shot
-    mechanic (hold A/C/Right Shift to charge, release to strike -- see
-    players.update_power_shot()/config.POWER_SHOT_*) is discoverable without a
-    tutorial. Only visible while that player is actually charging."""
-    if player.kick_charge <= 0.0:
+def _draw_charge_indicator(screen, player, ready_remaining: float = 0.0) -> None:
+    """Show charge, recovery and a brief ready cue, then get out of the way."""
+    if player.kick_charge <= 0.0 and player.kick_cooldown <= 0.0 and ready_remaining <= 0.0:
         return
 
     head_top = player.y - config.HEAD_OFFSET_Y - config.HEAD_RADIUS
@@ -187,20 +222,78 @@ def _draw_charge_indicator(screen, player) -> None:
     rect.midbottom = (round(player.x), round(head_top) - 8)
 
     pygame.draw.rect(screen, (20, 20, 24), rect, border_radius=3)
-    fraction = player.charge_fraction
+    if player.kick_charge > 0.0:
+        fraction = player.charge_fraction
+        color = _lerp_color(_CHARGE_BAR_COLOR_LOW, _CHARGE_BAR_COLOR_HIGH, fraction)
+        label = "CHARGE"
+    elif player.kick_cooldown > 0.0:
+        total = config.KICK_COOLDOWN_SECONDS + config.POWER_SHOT_COOLDOWN_BONUS_SECONDS
+        fraction = max(0.0, 1.0 - player.kick_cooldown / total)
+        color = (150, 190, 235)
+        label = "RECOVER"
+    else:
+        fraction = 1.0
+        color = HUD_ACCENT_COLOR
+        label = "READY"
     fill_width = round(_CHARGE_BAR_WIDTH * fraction)
     if fill_width > 0:
         fill_rect = pygame.Rect(rect.left, rect.top, fill_width, _CHARGE_BAR_HEIGHT)
-        color = _lerp_color(_CHARGE_BAR_COLOR_LOW, _CHARGE_BAR_COLOR_HIGH, fraction)
         pygame.draw.rect(screen, color, fill_rect, border_radius=3)
     pygame.draw.rect(screen, (245, 245, 245), rect, 1, border_radius=3)
+    _draw_text(screen, label, 15, color, (round(player.x), rect.top - 8))
 
 
 def _draw_ball(screen, game: Game) -> None:
     ball = game.ball
-    surface = assets.get("ball")
+    surface = _spinning_ball(assets.get("ball"), round(game.feedback.spin / 15) % 24)
     rect = surface.get_rect(center=(round(ball.x), round(ball.y)))
     screen.blit(surface, rect)
+
+
+@lru_cache(maxsize=24)
+def _spinning_ball(source, angle):
+    return pygame.transform.rotate(source, -angle * 15)
+
+
+@lru_cache(maxsize=64)
+def _ball_stamp(source, size, color):
+    silhouette = pygame.mask.from_surface(source).to_surface(
+        setcolor=color, unsetcolor=(0, 0, 0, 0)
+    )
+    return pygame.transform.smoothscale(silhouette, size)
+
+
+def _draw_ball_motion(screen, game: Game) -> None:
+    ball = game.ball
+    source = assets.get("ball")
+    height = max(0.0, config.GROUND_Y - ball.y - ball.radius)
+    scale = max(0.45, 1.0 - height / 350)
+    shadow = _ball_stamp(source, (round(28 * scale), 5), (0, 0, 0, round(70 * scale)))
+    screen.blit(shadow, shadow.get_rect(center=(round(ball.x), config.GROUND_Y + 3)))
+    for mark in game.feedback.trail:
+        fade = max(0.0, 1.0 - mark.age / config.BALL_TRAIL_SECONDS)
+        size = max(4, round(16 * fade))
+        alpha = round(90 * fade / 15) * 15
+        stamp = _ball_stamp(source, (size, size), (*HUD_ACCENT_COLOR, alpha))
+        screen.blit(stamp, stamp.get_rect(center=(round(mark.x), round(mark.y))))
+
+
+@lru_cache(maxsize=96)
+def _impact_ring(radius, color, alpha):
+    surface = pygame.Surface((2 * radius + 4, 2 * radius + 4), pygame.SRCALPHA)
+    pygame.draw.circle(surface, (*color, alpha), (radius + 2, radius + 2), radius, width=1)
+    return surface
+
+
+def _draw_impacts(screen, game: Game) -> None:
+    for mark in game.feedback.impacts:
+        progress = min(1.0, mark.age / config.IMPACT_FEEDBACK_SECONDS)
+        strong = mark.kind in ("kick", "power") or mark.kind.startswith("head:")
+        color = HUD_ACCENT_COLOR if strong else (170, 200, 220)
+        alpha = round((150 if strong else 90) * (1.0 - progress) / 15) * 15
+        radius = round(game.ball.radius + 2 + progress * 10)
+        ring = _impact_ring(radius, color, alpha)
+        screen.blit(ring, ring.get_rect(center=(round(mark.x), round(mark.y))))
 
 
 def _team_labels(game: Game) -> Tuple[str, str]:
@@ -225,10 +318,13 @@ def _draw_hud(screen, game: Game) -> None:
     cx = panel_rect.centerx
 
     _draw_text(screen, left_name, 18, LEFT_TEAM_COLOR, (panel_rect.left + 46, panel_rect.top + 14))
-    _draw_text(screen, str(m.score_left), 32, HUD_TEXT_COLOR, (panel_rect.left + 46, panel_rect.top + 40))
+    flash = max(0.0, 1.0 - game.feedback.goal_age / config.GOAL_FEEDBACK_SECONDS)
+    left_color = _lerp_color(HUD_TEXT_COLOR, HUD_ACCENT_COLOR, flash) if game.feedback.goal_side == "left" else HUD_TEXT_COLOR
+    right_color = _lerp_color(HUD_TEXT_COLOR, HUD_ACCENT_COLOR, flash) if game.feedback.goal_side == "right" else HUD_TEXT_COLOR
+    _draw_text(screen, str(m.score_left), 32, left_color, (panel_rect.left + 46, panel_rect.top + 40))
 
     _draw_text(screen, right_name, 18, RIGHT_TEAM_COLOR, (panel_rect.right - 46, panel_rect.top + 14))
-    _draw_text(screen, str(m.score_right), 32, HUD_TEXT_COLOR, (panel_rect.right - 46, panel_rect.top + 40))
+    _draw_text(screen, str(m.score_right), 32, right_color, (panel_rect.right - 46, panel_rect.top + 40))
 
     if m.sudden_death:
         _draw_text(screen, "SUDDEN DEATH", 16, HUD_ACCENT_COLOR, (cx, panel_rect.bottom - 10))
@@ -239,7 +335,16 @@ def _draw_hud(screen, game: Game) -> None:
 def _draw_phase_banner(screen, game: Game) -> None:
     m = game.match
     if m.phase is match_mod.MatchPhase.GOAL_CELEBRATION:
-        _draw_text(screen, "GOAL!", 72, HUD_ACCENT_COLOR, (config.SCREEN_WIDTH // 2, 250))
+        word = _font(72).render("GOAL!", True, HUD_ACCENT_COLOR)
+        arrival = max(0.0, 1.0 - game.feedback.goal_age / 0.18)
+        scale = 1.0 + 0.12 * arrival * arrival
+        word = pygame.transform.smoothscale(
+            word, (round(word.get_width() * scale), round(word.get_height() * scale))
+        )
+        screen.blit(word, word.get_rect(center=(config.SCREEN_WIDTH // 2, 250)))
+        if m.last_scoring_side is not None:
+            name = _team_labels(game)[0 if m.last_scoring_side == "left" else 1]
+            _draw_text(screen, f"{name} SCORES", 26, HUD_TEXT_COLOR, (400, 309))
     elif m.phase is match_mod.MatchPhase.KICKOFF:
         # The very first kickoff of the match is the only moment the clock
         # still reads the full match length untouched; every restart after
@@ -275,13 +380,28 @@ def _draw_menu_background(screen) -> None:
     screen.blit(_menu_background(), (0, 0))
 
 
-def _draw_menu_row(screen, label: str, index: int, selected: bool) -> None:
+@lru_cache(maxsize=1)
+def _menu_scene_veil():
+    surface = _menu_background().copy()
+    surface.set_alpha(160)
+    return surface
+
+
+@lru_cache(maxsize=1)
+def _menu_backplate():
+    surface = pygame.Surface((440, 470), pygame.SRCALPHA)
+    pygame.draw.rect(surface, (14, 20, 34, 225), surface.get_rect(), border_radius=10)
+    return surface
+
+
+def _draw_menu_row(screen, label: str, index: int, selected: bool,
+                   *, first_y: int = MENU_ROW_Y, spacing: int = MENU_ROW_SPACING) -> None:
     """Stable label geometry; selection has both a marker and a filled row."""
-    y = MENU_ROW_Y + index * MENU_ROW_SPACING
+    y = first_y + index * spacing
     if selected:
         rect = pygame.Rect(220, y - 24, 360, 48)
         pygame.draw.rect(screen, MENU_ROW_BG, rect, border_radius=6)
-        pygame.draw.rect(screen, MENU_SELECT_COLOR, (220, y - 24, 4, 48))
+        pygame.draw.rect(screen, MENU_SELECT_COLOR, rect, width=1, border_radius=6)
         pygame.draw.polygon(screen, MENU_SELECT_COLOR, [(237, y - 6), (237, y + 6), (245, y)])
     _draw_text(screen, label, MENU_ROW_SIZE, MENU_SELECT_COLOR if selected else HUD_TEXT_COLOR, (400, y))
 
@@ -362,6 +482,11 @@ def _draw_menu_rivals(screen, game: Game) -> None:
     bob_rival = math.sin(game.attract_clock * 3.0 + math.pi) * 4.0
     screen.blit(scotty_big, scotty_big.get_rect(midbottom=(90, round(feet_y + bob_scotty))))
     screen.blit(rival_big, rival_big.get_rect(midbottom=(config.SCREEN_WIDTH - 90, round(feet_y + bob_rival))))
+    if game.state is GameState.ATTRACT and game.menu_index in (0, 1):
+        labels = ("YOU", "CPU") if game.menu_index == 0 else ("P1", "P2")
+        for x, label in zip((90, config.SCREEN_WIDTH - 90), labels):
+            _draw_text(screen, label, 20, HUD_ACCENT_COLOR if label != "CPU" else RIGHT_TEAM_COLOR,
+                       (x, feet_y + 22))
 
 
 def _draw_how_to_play(screen, game: Game) -> None:
@@ -383,7 +508,7 @@ def _draw_how_to_play(screen, game: Game) -> None:
     for row, cells in enumerate(rows):
         for x, text in zip(columns, cells):
             _draw_text(screen, text, 22, HUD_TEXT_COLOR, (x, 322 + row * 38))
-    _draw_text(screen, "Normal kicks fire on press, even while power is recharging.", 22, HUD_DIM_COLOR, (400, 488))
+    _draw_text(screen, "Normal kicks lob. Charged shots are faster and flatter.", 22, HUD_DIM_COLOR, (400, 488))
     _draw_text(screen, "B / P1 / Esc: pause. Resume or choose Main Menu.", 22, HUD_DIM_COLOR, (400, 521))
     _draw_footer(screen, game, select="MAIN MENU")
 
@@ -409,5 +534,6 @@ def _draw_result(screen, game: Game) -> None:
         )
 
     _draw_menu_rivals(screen, game)
-    _draw_menu_row(screen, "MAIN MENU", 3, True)
-    _draw_footer(screen, game)
+    for index, label in enumerate(RESULT_ITEMS):
+        _draw_menu_row(screen, label, index, index == game.result_index, first_y=425, spacing=58)
+    _draw_footer(screen, game, back="MAIN MENU", navigate=True)

@@ -12,10 +12,12 @@ PACKAGE_DIR = Path(__file__).resolve().parent.parent / "headscotter"
 PURE_MODULES = (
     "config.py",
     "physics.py",
+    "world.py",
     "players.py",
     "cpu.py",
     "match.py",
     "input.py",
+    "feedback.py",
 )
 
 

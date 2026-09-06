@@ -12,7 +12,7 @@ import random
 from dataclasses import dataclass, field, replace
 from typing import Optional
 
-from . import config, physics, players
+from . import config, physics, players, world
 from .physics import Ball
 from .players import Player
 
@@ -31,15 +31,7 @@ def _copy_ball(ball: Ball) -> Ball:
 
 def _forecast_step(ball: Ball, dt: float, opponent: Optional[Player] = None) -> Optional[str]:
     """Shared physical rules, using only an extrapolated observed opponent."""
-    steps = max(1, math.ceil(ball.speed() * dt / config.BALL_MAX_STEP_PX))
-    for _ in range(steps):
-        if opponent is not None:
-            players.apply_head_collision(opponent, ball)
-            players.apply_body_collision(opponent, ball)
-        event = physics.step_ball(ball, dt / steps)
-        if event:
-            return event
-    return None
+    return world.step_world(ball, (opponent,) if opponent is not None else (), dt)
 
 
 @dataclass
@@ -185,7 +177,8 @@ class CPUController:
         if not jump and not self._cross_direction and close and (goal_side or threat):
             if move == 0 and player.facing != attack:
                 move = attack
-        next_x = player.x + move * config.PLAYER_SPEED * dt
+        # Game consumes a shot before advancing the joint world substeps.
+        next_x = player.x
         facing = move or player.facing
         in_range = (
             abs(known.x - (next_x + facing * config.KICK_RANGE_X * 0.5)) <= config.KICK_RANGE_X
@@ -272,9 +265,8 @@ class CPUController:
                 continue
             if sample.y >= config.GROUND_Y - config.HEAD_OFFSET_Y:
                 continue
-            # Semi-implicit 60Hz human jump, not an enlarged CPU envelope.
-            height = -config.JUMP_VELOCITY * t - 0.5 * config.GRAVITY * t * (t + 1 / 60)
-            hy = config.GROUND_Y - height - config.HEAD_OFFSET_Y
+            height = -config.JUMP_VELOCITY * t - 0.5 * config.GRAVITY * t * t
+            hy = player.y - height - config.HEAD_OFFSET_Y
             for offset in (config.CPU_SHOT_SETUP_PX, config.CPU_SHOT_SETUP_PX * 0.5):
                 desired = sample.x - self.attack_direction * offset
                 x = physics.clamp(desired,
@@ -284,12 +276,15 @@ class CPUController:
                 distance = math.hypot(dx, dy)
                 if distance < 1e-6 or distance >= config.HEAD_RADIUS + sample.radius - config.CPU_HEADER_MARGIN_PX:
                     continue
-                incoming = (sample.vx * dx + sample.vy * dy) / distance
+                planned_vx = 0.0 if abs(x - player.x) < config.PLAYER_SPEED * t - 1e-6 else math.copysign(config.PLAYER_SPEED, x - player.x)
+                planned_vy = config.JUMP_VELOCITY + config.GRAVITY * t
+                incoming = ((sample.vx - planned_vx) * dx + (sample.vy - planned_vy) * dy) / distance
                 if incoming >= -config.BALL_MIN_BOUNCE_SPEED:
                     continue
                 headed = _copy_ball(sample)
                 physics.resolve_circle_collision(headed, x, hy, config.HEAD_RADIUS,
-                                                 config.BALL_RESTITUTION_HEAD, config.HEADER_LIFT)
+                                                 config.BALL_RESTITUTION_HEAD, config.HEADER_LIFT,
+                                                 collider_velocity=(planned_vx, planned_vy))
                 value = headed.vx * self.attack_direction - max(0.0, headed.vy) * 0.25
                 if value > best_value:
                     best_value, best_target = value, x
@@ -319,7 +314,7 @@ class CPUController:
         return crossed
 
     def _opponent_vx(self) -> float:
-        return self._opponent.facing * config.PLAYER_SPEED if self._opponent and self._opponent.moving else 0.0
+        return self._opponent.vx if self._opponent is not None else 0.0
 
     def _known_ball(self) -> Ball:
         return Ball(self._known_ball_x, self._known_ball_y, self._known_ball_vx,
@@ -343,9 +338,6 @@ class CPUController:
             self._trajectory = [(0.0, _copy_ball(predicted))]
             self._predicted_goal = None
             for tick in range(1, math.ceil(config.CPU_PREDICTION_SECONDS / config.CPU_PREDICTION_STEP) + 1):
-                if other is not None:
-                    players.apply_move(other, other.facing if other.moving else 0, config.CPU_PREDICTION_STEP)
-                    players.step_player_physics(other, config.CPU_PREDICTION_STEP)
                 event = _forecast_step(predicted, config.CPU_PREDICTION_STEP, other)
                 self._trajectory.append((tick * config.CPU_PREDICTION_STEP, _copy_ball(predicted)))
                 if event:
@@ -353,8 +345,5 @@ class CPUController:
                     break
         else:
             predicted = self._known_ball()
-            if self._opponent is not None:
-                players.apply_move(self._opponent, self._opponent.facing if self._opponent.moving else 0, dt)
-                players.step_player_physics(self._opponent, dt)
             _forecast_step(predicted, dt, self._opponent)
             self._store_ball(predicted)

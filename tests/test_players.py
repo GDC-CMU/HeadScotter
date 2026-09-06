@@ -168,6 +168,15 @@ class KickTests(unittest.TestCase):
 
 
 class HeadCollisionTests(unittest.TestCase):
+    def test_rising_head_transfers_upward_motion_to_a_stationary_ball(self):
+        player = players.new_player(400, 1)
+        player.vy = -500
+        hx, hy = player.head_center
+        ball = Ball(hx, hy - config.HEAD_RADIUS - config.BALL_RADIUS + 1)
+        players.apply_head_collision(player, ball)
+        self.assertLess(ball.vy, -500)
+        self.assertLessEqual(ball.speed(), config.BALL_MAX_SPEED)
+
     def test_ball_bounces_off_the_head(self):
         player = players.new_player(config.PITCH_CENTER_X, facing=1)
         hx, hy = player.head_center
@@ -187,6 +196,26 @@ class BodyCollisionTests(unittest.TestCase):
     """players.apply_body_collision() -- the fix for the ball passing
     straight through a standing player's torso/legs, which previously
     had no collider at all (only the head circle did)."""
+
+    def test_moving_body_transfers_velocity_but_does_not_reflect_a_separating_ball(self):
+        for velocity in (0, 400):
+            player = players.new_player(320, 1)
+            player.vx = 260
+            ball = Ball(354, 485, vx=velocity)
+            players.apply_body_collision(player, ball)
+            self.assertGreaterEqual(ball.x, 355)
+            if velocity == 0:
+                self.assertGreater(ball.vx, 260)
+            else:
+                self.assertEqual(ball.vx, velocity)
+
+    def test_running_kick_inherits_motion_and_stays_capped(self):
+        player = players.new_player(360, 1)
+        player.vx = 260
+        ball = Ball(395, 485)
+        self.assertTrue(players.normal_kick(player, ball).fired)
+        self.assertGreater(ball.vx, player.vx)
+        self.assertLessEqual(ball.speed(), config.BALL_MAX_SPEED)
 
     def test_body_rect_spans_from_head_bottom_to_the_feet(self):
         player = players.new_player(config.PITCH_CENTER_X, facing=1)

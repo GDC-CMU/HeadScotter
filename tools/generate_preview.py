@@ -16,11 +16,11 @@ captures a handful of frames through the real render path
 writes them plus ``manifest.json`` to ``assets/preview/``.
 
 The captured window is a **time-lapse**, not a straight recording: it
-spans ``WINDOW_TICKS`` of simulated gameplay (an opening rally and its
+spans one deterministically selected window of gameplay (an opening rally and its
 restart, rather than just a huddle around kickoff), but only
 ``FRAME_COUNT`` frames are actually sampled from it,
 evenly spaced through the whole window rather than consecutive ticks
-(see ``STRIDE_TICKS`` below). The output ``fps`` in the manifest is a
+in the selected window. The output ``fps`` in the manifest is a
 separate, independent choice -- how fast the *card* plays the sampled
 highlights back -- not the rate anything was captured at.
 
@@ -78,33 +78,35 @@ SEED = 20260115  # fixed: pins every CPUController aim-error roll the demo makes
 SIM_HZ = 60
 DT = 1.0 / SIM_HZ
 
-# Chosen by tracing this exact seed's demo. These tick numbers are
-# re-traced after the tactical opponent update (intercepts, physical
-# crossings, headers and existing normal/power shots). Human/game-wide
-# gravity, restitution, jump geometry and actions remain unchanged.
-# This time-lapses one whole
-# kickoff-to-kickoff cycle rather than sampling it tick-for-tick -- see
-# the module docstring:
-#
-#   tick   0 : KICKOFF, ball at center (the window's opening frame)
-#   tick  72 : PLAYING begins -- the opening rally
-#   tick 456 : GOAL (score 1-0)
-#   tick 577 : KICKOFF again, ball reset to center
-#   tick 649 : PLAYING resumes -- the window's closing frame, a visual
-#              near-match for its own opening frame so the loop-back
-#              reads as another kickoff rather than a jump to a random
-#              moment.
-WINDOW_TICKS = 649
+# Find one complete rally with this fixed seed rather than pinning stale
+# goal/reset ticks every time the game's feel changes.
+MAX_WINDOW_TICKS = SIM_HZ * 90
 
 FPS = 12  # independent of how the window was sampled -- see module docstring
 # 20 frames, evenly sampled across the whole WINDOW_TICKS span (not
 # consecutive ticks): 20/12 ~= 1.67s, comfortably inside the launcher's
 # "roughly 1-3s" guidance and well under MAX_PREVIEW_FRAMES=64.
 FRAME_COUNT = 20
-STRIDE_TICKS = WINDOW_TICKS / (FRAME_COUNT - 1)
 
 OUT_WIDTH, OUT_HEIGHT = 200, 150
 OUT_DIR = REPO_ROOT / "assets" / "preview"
+
+
+def preview_window_ticks() -> int:
+    game = Game(rng=random.Random(SEED))
+    game._enter_demo()
+    scored = False
+    restarted = False
+    for tick in range(1, MAX_WINDOW_TICKS + 1):
+        game.update(DT, RawInput())
+        phase = game.match.phase
+        if phase is MatchPhase.GOAL_CELEBRATION:
+            scored = True
+        elif scored and phase is MatchPhase.KICKOFF:
+            restarted = True
+        elif restarted and phase is MatchPhase.PLAYING:
+            return tick
+    raise RuntimeError("the fixed preview seed did not produce a complete rally")
 
 
 def _render_clean_frame(screen, game: Game) -> None:
@@ -170,8 +172,28 @@ def capture_ui(screen, out_dir: Path) -> None:
         game._enter_result()
         capture(f"result-{suffix}", game)
 
+    shot = Game(rng=random.Random(SEED))
+    shot.start_match("2P")
+    shot.match.phase = MatchPhase.PLAYING
+    shot.ball.x = shot.player_left.x + 35
+    for _ in range(38):
+        shot.update(DT, RawInput(pressed_keys=frozenset({"c"})))
+    for _ in range(5):
+        shot.update(DT, RawInput())
+    capture("power-flight", shot)
+
+    goal = Game(rng=random.Random(SEED))
+    goal._enter_demo()
+    for _ in range(MAX_WINDOW_TICKS):
+        goal.update(DT, RawInput())
+        if goal.match.phase is MatchPhase.GOAL_CELEBRATION:
+            capture("goal-feedback", goal)
+            break
+    else:
+        raise RuntimeError("no goal event was available for UI capture")
+
     # One full-resolution batch sheet for the bounded visual inspection.
-    sheet = pygame.Surface((2400, 3 * 630))
+    sheet = pygame.Surface((2400, ((len(captures) + 2) // 3) * 630))
     sheet.fill((14, 20, 34))
     font = pygame.font.Font(None, 22)
     for index, (name, image) in enumerate(captures):
@@ -187,13 +209,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ui-output", type=Path, help="capture UI states here instead of regenerating the preview")
     args = parser.parse_args()
-    pygame.init()
+    pygame.display.init()
+    pygame.font.init()
     screen = pygame.display.set_mode((config.SCREEN_WIDTH, config.SCREEN_HEIGHT))
 
     if args.ui_output is not None:
         capture_ui(screen, args.ui_output)
         return 0
 
+    window_ticks = preview_window_ticks()
+    stride_ticks = window_ticks / (FRAME_COUNT - 1)
     game = Game(rng=random.Random(SEED))
     game._enter_demo()
     idle = RawInput()
@@ -214,7 +239,7 @@ def main() -> int:
             name = f"frame_{len(frame_names):03d}.png"
             pygame.image.save(small, str(OUT_DIR / name))
             frame_names.append(name)
-            next_capture_at += STRIDE_TICKS
+            next_capture_at += stride_ticks
             if len(frame_names) >= FRAME_COUNT:
                 break
         game.update(DT, idle)
@@ -226,7 +251,7 @@ def main() -> int:
 
     print(
         f"wrote {len(frame_names)} frames ({OUT_WIDTH}x{OUT_HEIGHT} @ {FPS}fps) "
-        f"time-lapsed from {WINDOW_TICKS} simulated ticks ({WINDOW_TICKS / SIM_HZ:.1f}s), "
+        f"time-lapsed from {window_ticks} simulated ticks ({window_ticks / SIM_HZ:.1f}s), "
         f"{len(frame_names) / FPS:.2f}s loop, to {OUT_DIR}"
     )
     return 0

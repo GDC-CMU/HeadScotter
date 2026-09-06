@@ -27,6 +27,15 @@ WINDOW_TITLE = "HeadScotter"
 #: against a fullscreen window is painful, hence the escape hatch.
 ENV_WINDOWED = "HEADSCOTTER_WINDOWED"
 
+BALL_SPIN_MAX_DEGREES = 720.0
+BALL_TRAIL_SECONDS = 0.16
+BALL_TRAIL_LIMIT = 5
+POWER_TRAIL_WINDOW = 0.65
+IMPACT_FEEDBACK_SECONDS = 0.16
+IMPACT_FEEDBACK_LIMIT = 4
+POWER_READY_CUE_SECONDS = 0.45
+GOAL_FEEDBACK_SECONDS = 0.55
+
 
 def windowed_requested() -> bool:
     """Whether ``HEADSCOTTER_WINDOWED`` asks for a window rather than fullscreen."""
@@ -202,15 +211,9 @@ BALL_AIR_DRAG_PER_SEC = 0.35     # fraction of horizontal speed shed per second 
 BALL_GROUND_FRICTION_PER_SEC = 620.0  # px/sec^2 horizontal deceleration while rolling on the ground
 
 # --- Bounce restitution (0 = dead stop, 1 = perfectly elastic) -------------------
-# Sourced band: 0.6-0.8 across seven independent measurements, median 0.70.
-# Raised toward the bouncy end of that same sourced band (not beyond it) so
-# the ball has real hang time and rebound instead of feeling dead --
-# together with the lower BALL_GRAVITY above, this is what makes the ball
-# feel "light" rather than "heavy", which is the specific play-feel
-# complaint this was tuned to fix. Re-verified against the full-match
-# balance simulation afterward (see tests/test_balance.py) rather than
-# assumed safe.
-BALL_RESTITUTION_GROUND = 0.78
+# Deliberately lively rebounds: a lob retains enough height for another
+# header opportunity, then loses energy and settles rather than bouncing forever.
+BALL_RESTITUTION_GROUND = 0.90
 BALL_RESTITUTION_WALL = 0.70
 # NOT sourced as a distinct value -- no implementation in the report
 # separates a header bounce from the ordinary ground/wall restitution above.
@@ -234,6 +237,8 @@ BALL_RESTITUTION_HEAD = 0.90
 # Below this bounce speed the ball is considered at rest rather than left to
 # jitter in an ever-smaller "Zeno" bounce loop against the ground.
 BALL_MIN_BOUNCE_SPEED = 40.0
+# Stop imperceptible floor chatter without deadening softer head contacts.
+BALL_GROUND_SETTLE_SPEED = 65.0
 # Hard speed cap so a chain of bounces/kicks can never make the ball an
 # unhittable blur; also keeps it from ever crossing a wall within one frame.
 BALL_MAX_SPEED = 900.0
@@ -270,20 +275,10 @@ BALL_MAX_STEP_PX = 6.0
 # rather than reaching disproportionately far.
 KICK_RANGE_X = 44.0
 KICK_RANGE_Y = 70.0
-# NOT sourced as an exact figure -- re-tuned alongside BALL_RESTITUTION_HEAD
-# and CPU_MAX_ADVANCE_FRACTION during the ball-physics rebalancing pass
-# (see tests/test_balance.py): with the ball itself now bouncier/floatier
-# (BALL_GRAVITY/BALL_RESTITUTION_GROUND above), an ordinary kick needed
-# far less added impulse than before to still feel like a real strike --
-# a kick and a lively ball otherwise stack additively into blowout-speed
-# shots. 300 was the value found, by the same sweep-and-simulate method,
-# that keeps a deliberate kick feeling like a real strike without letting
-# a chain of kicks alone blow the scoreline past the sourced "low single
-# digits per side" band. This is a normal kick's strength specifically --
-# a fully-charged power shot (see POWER_SHOT_IMPULSE_SPEED below) is
-# still meaningfully stronger on top of this.
-KICK_IMPULSE_SPEED = 300.0       # px/sec, magnitude of the velocity a kick imparts
-KICK_LAUNCH_ANGLE_DEG = 38.0     # above horizontal, in the kicker's facing direction
+# A normal kick is a lob, not the old 13px-high chip. The angle also has
+# to clear the kicker's solid head; it is not implemented with immunity.
+KICK_IMPULSE_SPEED = 825.0      # relative launch speed, before inherited motion/cap
+KICK_LAUNCH_ANGLE_DEG = 42.0    # above horizontal, in the kicker's facing direction
 KICK_COOLDOWN_SECONDS = 0.35     # power recovery base; also CPU's normal-attempt interval
 # How long the "just kicked" pose (render.py's kick sprite) is held after
 # any kick fires, normal or power -- independent of the (now variable,

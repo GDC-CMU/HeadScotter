@@ -1,4 +1,4 @@
-# HeadScotter art and sound assets
+# HeadScotter art assets
 
 All gameplay art is loaded from the PNG files in `assets/sprites/` through
 the single loader in `headscotter/assets.py`. Nothing else in the codebase
@@ -6,8 +6,7 @@ draws gameplay sprites procedurally (the only exception is HUD/menu text,
 drawn with pygame fonts as ordinary UI chrome, not gameplay art), and
 nothing reads a sprite path directly -- every file below is declared once
 in `headscotter.assets.SPRITE_SPECS` (name -> relative path -> nominal
-pixel size). All sound effects follow the identical contract through
-`headscotter/audio.py` -- see "Sound" below.
+pixel size). HeadScotter is silent and ships no sound assets.
 
 **To replace any piece of art, overwrite the file at the same path with
 the same name, keeping (roughly) the same aspect ratio. No code changes
@@ -148,52 +147,16 @@ recovers against actual goal threats using the same field-player body.
 |---|---|---|
 | `scoreboard.png` | 260x70 | The compact HUD panel anchored at the top-center of the screen (`config.SCOREBOARD_TOP_Y`). `render.py` draws the score digits, team labels, and the clock/"SUDDEN DEATH" text on top of this panel as ordinary HUD text -- nothing about the score or clock is baked into the image itself. |
 
-## Sound
-
-All sound effects are loaded from the `.wav` files in `assets/sounds/`
-through the single loader in `headscotter/audio.py` -- the audio
-equivalent of `headscotter/assets.py`'s contract for art, and every file
-below is declared once in `headscotter.audio.SOUND_SPECS`. **To replace
-any sound, overwrite the file at the same path with the same name; no
-code changes are required.**
-
-Audio is entirely optional and degrades silently: if no audio device is
-available or `pygame.mixer` encounters a device/driver error, the game
-prints one warning to stderr and keeps running with no sound at all --
-the cabinet must never fail to boot a game because of audio. Sound is
-only ever turned on by the real game loop (`Game.init_display()`);
-headless tests and the build-time placeholder/preview generator tools
-never call it, so both stay silent and fully deterministic without any
-special-casing.
-
-Everything currently committed in `assets/sounds/` is a **placeholder**,
-generated deterministically (fixed waveform formulas, never Python's
-`random` module) by `tools/generate_sounds.py`:
-
-```
-python tools/generate_sounds.py
-```
-
-| File | Used for |
-|---|---|
-| `kick.wav` | An ordinary kick connecting (`players.normal_kick()`, on a fresh press), or a lightly charged power release. |
-| `power_shot.wav` | A charged power shot connecting -- see "Power shot" below. Distinct from, and more dramatic than, an ordinary kick. |
-| `bounce.wav` | A new incoming impact against ground/wall/ceiling, not floor support, rolling or separation (`physics.step_ball()`'s `on_bounce` hook). |
-| `header.wav` | A new incoming head impact (`players.apply_head_collision()`'s impact hook), not overlap correction. Repeated substep corrections share one contact episode. |
-| `goal.wav` | A goal is scored. |
-| `whistle.wav` | Kickoff (the opening whistle and every restart after a goal) and full time. |
-| `menu_move.wav` | Moving the menu selection up or down. |
-| `menu_select.wav` | Confirming a menu selection. |
-
 ## Power shot
 
 Holding A (keyboard C / Right Shift) charges a power shot; releasing it fires, with
-strength interpolated continuously between an ordinary kick (an
-immediate tap-and-release) and a full power shot (held for
+launch interpolated from a normal aerial lob (an immediate tap-and-release)
+to a faster, flatter power shot (held for
 `config.POWER_SHOT_CHARGE_SECONDS`) -- see `players.update_power_shot()`. A
-small charge meter appears above a charging player's head
+small meter appears above a player's head during charge and recovery
 (`render._draw_charge_indicator()`) so the mechanic is discoverable
-without a tutorial; it is drawn procedurally (a simple bar, like the
+without a tutorial. A brief READY cue completes recovery; the meter then
+disappears instead of becoming permanent HUD clutter. It is drawn procedurally (a simple bar, like the
 HUD's score/clock text), not a sprite, since it is dynamic gameplay
 feedback rather than art. A fully-charged shot costs extra recovery time
 (`config.POWER_SHOT_COOLDOWN_BONUS_SECONDS`) on top of its base recovery.
@@ -208,11 +171,3 @@ charge, so an old release cannot fire on resume.
    so the placeholder set stays complete, then run the script.
 3. Reference the new sprite by name from `headscotter/render.py` with
    `assets.get("your_new_name")`.
-
-## Adding a brand-new sound
-
-1. Add an entry to `SOUND_SPECS` in `headscotter/audio.py` (name ->
-   relative path).
-2. Add a matching generator function in `tools/generate_sounds.py` so
-   the placeholder set stays complete, then run the script.
-3. Play it from `headscotter/game.py` with `audio.play("your_new_name")`.
